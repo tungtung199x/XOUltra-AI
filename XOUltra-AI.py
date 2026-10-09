@@ -1830,7 +1830,7 @@ class XOUltraAI:
         )
         # Đồng hồ đếm ngược hết hạn yêu cầu đầu hàng (đỏ, sau nút ĐẦU HÀNG)
         self.lbl_resign_countdown = ctk.CTkLabel(
-            self.row4, text="", font=ctk.CTkFont(size=24, weight="bold"),
+            self.row4, text="", font=ctk.CTkFont(size=30, weight="bold"),
             text_color="#ef4444", width=36, height=35
         )
         # không pack mặc định — chỉ hiện khi có yêu cầu đang chờ
