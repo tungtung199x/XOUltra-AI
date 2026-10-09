@@ -34,10 +34,7 @@ jobs:
         --add-data "Ultra.ico;."
         --add-data "translations.json;."
         --add-data "pbrain-rapfi-windows-avx2.exe;."
-        --add-data "ting.wav;sounds"
-        --add-data "victory.wav;sounds"
-        --add-data "idea.wav;sounds"
-        --add-data "time.wav;sounds"
+        --add-data "sounds;sounds"
         --add-data "icons;icons"
         "XOUltra-AI.py"
         && move dist\XOUltra-AI.exe .
@@ -73,10 +70,7 @@ jobs:
           --add-data "Ultra.icns:." \
           --add-data "translations.json:." \
           --add-data "pbrain-rapfi-mac:." \
-          --add-data "ting.wav:sounds" \
-          --add-data "victory.wav:sounds" \
-          --add-data "idea.wav:sounds" \
-          --add-data "time.wav:sounds" \
+          --add-data "sounds:sounds" \
           --add-data "icons:icons" \
           "XOUltra-AI.py"
         mv dist/XOUltra-AI .
