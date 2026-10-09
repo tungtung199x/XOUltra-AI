@@ -1,0 +1,103 @@
+name: Build and Release XOUltra-AI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller customtkinter pillow websocket-client
+
+    - name: Build with PyInstaller (Windows)
+      run: |
+        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI" --icon "Ultra.ico" --add-data "Ultra.ico;." --add-data "translations.json;." --add-data "pbrain-rapfi-windows-avx2.exe;." --add-data "ting.wav;." --add-data "victory.wav;." --add-data "idea.wav;." "XOUltra-AI.py"
+        move dist\XOUltra-AI.exe .
+
+    - name: Upload Windows Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: XOUltraAI-Windows
+        path: XOUltra-AI.exe
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller customtkinter pillow websocket-client
+
+    - name: Build with PyInstaller (macOS)
+      run: |
+        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI" --icon "Ultra.icns" --add-data "Ultra.icns:." --add-data "translations.json:." --add-data "pbrain-rapfi-mac:." --add-data "ting.wav:." --add-data "victory.wav:." --add-data "idea.wav:." "XOUltra-AI.py"
+        mv dist/XOUltra-AI .
+        chmod +x "XOUltra-AI"
+
+    - name: Upload Mac Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: XOUltraAI-MacOS
+        path: XOUltra-AI
+
+  release:
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: XOUltraAI-Windows
+        path: ./artifacts-win
+
+    - name: Download Mac Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: XOUltraAI-MacOS
+        path: ./artifacts-mac
+
+    - name: Rename files for release
+      run: |
+        mv ./artifacts-win/XOUltra-AI.exe ./artifacts-win/XOUltra-AI-Windows.exe
+        mv ./artifacts-mac/XOUltra-AI ./artifacts-mac/XOUltra-AI-Mac
+
+    - name: Create Release and Upload Assets
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          ./artifacts-win/XOUltra-AI-Windows.exe
+          ./artifacts-mac/XOUltra-AI-Mac
+        tag_name: release-${{ github.run_number }}
+        name: XOUltra-AI v1.0.${{ github.run_number }}
+        body: |
+          Automatic release for the XOUltra-AI game.
+          
+          🪟 Windows: Download the file "XOUltra-AI-Windows.exe"
+          
+          🍏 MacOS: Download the file "XOUltra-AI-MacOS"
+        draft: false
+        prerelease: false
