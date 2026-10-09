@@ -27,19 +27,20 @@ jobs:
         pip install pyinstaller customtkinter pillow websocket-client
 
     - name: Build with PyInstaller (Windows)
-      run: |
-        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI" ^
-          --icon "Ultra.ico" ^
-          --add-data "Ultra.ico;." ^
-          --add-data "translations.json;." ^
-          --add-data "pbrain-rapfi-windows-avx2.exe;." ^
-          --add-data "ting.wav;sounds" ^
-          --add-data "victory.wav;sounds" ^
-          --add-data "idea.wav;sounds" ^
-          --add-data "time.wav;sounds" ^
-          --add-data "icons;icons" ^
-          "XOUltra-AI.py"
-        move dist\XOUltra-AI.exe .
+      shell: cmd
+      run: >
+        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI"
+        --icon "Ultra.ico"
+        --add-data "Ultra.ico;."
+        --add-data "translations.json;."
+        --add-data "pbrain-rapfi-windows-avx2.exe;."
+        --add-data "ting.wav;sounds"
+        --add-data "victory.wav;sounds"
+        --add-data "idea.wav;sounds"
+        --add-data "time.wav;sounds"
+        --add-data "icons;icons"
+        "XOUltra-AI.py"
+        && move dist\XOUltra-AI.exe .
 
     - name: Upload Windows Artifact
       uses: actions/upload-artifact@v4
