@@ -135,10 +135,16 @@
       "both_ready": "Cả hai đã sẵn sàng!",
       "ws_not_connected": "WebSocket chưa kết nối",
       "opp_resigned_press_new": "{0} đã đầu hàng, nếu chấp nhận yêu cầu hãy nhấn VÁN MỚI",
-      "you_resigned_wait": "Bạn đã đầu hàng. Đang chờ đối thủ chấp nhận...",
+      "you_resigned_wait": "Bạn đã gửi yêu cầu đầu hàng. Đang chờ phản hồi (15s)...",
       "resign_btn": "ĐẦU HÀNG",
       "accept_btn": "CHẤP NHẬN",
-      "opp_resigned_press_accept": "{0} đã đầu hàng, hãy nhấn CHẤP NHẬN"
+      "opp_resigned_press_accept": "{0} đã đầu hàng, hãy nhấn CHẤP NHẬN hoặc TỪ CHỐI",
+      "reject_btn": "TỪ CHỐI",
+      "resign_rejected_you": "Đối thủ đã từ chối yêu cầu đầu hàng. Tiếp tục ván đấu!",
+      "resign_rejected_opp": "Bạn đã từ chối yêu cầu đầu hàng. Tiếp tục ván đấu!",
+      "resign_offer_status": "{0} muốn đầu hàng — CHẤP NHẬN hoặc TỪ CHỐI (15s)",
+      "resign_expired_msg": "Yêu cầu đầu hàng đã hết hạn (15s). Tiếp tục ván đấu!",
+      "resign_limit_msg": "Đã dùng hết 2 lần yêu cầu đầu hàng trong ván này."
     },
     "EN": {
       "mode": "Mode:",
@@ -261,10 +267,16 @@
       "both_ready": "Both players are ready!",
       "ws_not_connected": "WebSocket is not connected",
       "opp_resigned_press_new": "{0} has resigned. Press NEW GAME to accept the request.",
-      "you_resigned_wait": "You resigned. Waiting for opponent to accept...",
+      "you_resigned_wait": "Resign request sent. Waiting for response (15s)...",
       "resign_btn": "RESIGN",
       "accept_btn": "ACCEPT",
-      "opp_resigned_press_accept": "{0} has resigned. Press ACCEPT"
+      "opp_resigned_press_accept": "{0} has resigned. Press ACCEPT or REJECT",
+      "reject_btn": "REJECT",
+      "resign_rejected_you": "Opponent rejected your resign request. Continue playing!",
+      "resign_rejected_opp": "You rejected the resign request. Continue playing!",
+      "resign_offer_status": "{0} wants to resign — ACCEPT or REJECT (15s)",
+      "resign_expired_msg": "Resign request expired (15s). Continue playing!",
+      "resign_limit_msg": "You have used both resign requests this game."
     }
   }
 }

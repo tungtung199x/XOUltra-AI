@@ -306,6 +306,8 @@ class XOUltraAI:
         self._i_resigned = False
         self._opp_resigned = False
         self._resign_name = ""
+        self._my_resign_count = 0  # số lần đã gửi yêu cầu đầu hàng trong ván
+        self._resign_offer_job = None  # local 10s countdown cancel
 
         self.lang_var = ctk.StringVar(value="VI")
         self.game_mode_var = ctk.StringVar(value="Ultra-AI")
@@ -1406,6 +1408,10 @@ class XOUltraAI:
         self.add_score(winner_sym)
         self.display_status("timeout_msg", color=self.status_color_for_symbol(winner_sym), format_args=[winner_sym])
         self.game_over = True
+        # Hủy trạng thái yêu cầu đầu hàng nếu đang pending
+        self._i_resigned = False
+        self._opp_resigned = False
+        self._resign_name = ""
         if self.game_mode_var.get() == "AI vs AI":
             self.is_ai_thinking = False
             self.stop_thinking_animation()
@@ -1822,7 +1828,13 @@ class XOUltraAI:
             font=bold_font, fg_color="#7f1d1d", hover_color="#991b1b",
             width=130, height=35, corner_radius=10, state="disabled"
         )
-        
+        # Đồng hồ đếm ngược hết hạn yêu cầu đầu hàng (đỏ, sau nút ĐẦU HÀNG)
+        self.lbl_resign_countdown = ctk.CTkLabel(
+            self.row4, text="", font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#ef4444", width=36, height=35
+        )
+        # không pack mặc định — chỉ hiện khi có yêu cầu đang chờ
+
         # Đưa nút Bắt đầu / Dừng / Tiếp tục lên trước nút Lùi - Tiến
         disabled_bg = "#21262d" if self.is_dark_mode else "#e2e8f0"
         disabled_fg = "#6e7681" if self.is_dark_mode else "#64748b"
@@ -2018,42 +2030,63 @@ class XOUltraAI:
 
         # 1. Nút VÁN MỚI
         # Offline: sáng khi đã có nước hoặc ván kết thúc.
-        # Online: chỉ sáng khi ván kết thúc bình thường (thắng/hòa/hết giờ)
-        #         và chưa bấm rematch. Luồng đầu hàng → chỉ dùng CHẤP NHẬN,
-        #         VÁN MỚI luôn xám cho đến khi rematch xong (cờ resign được xóa).
+        # Online:
+        #   - Đang chờ phản hồi đầu hàng (opp gửi offer): nút = CHẤP NHẬN (xanh)
+        #   - Mình đã gửi offer: khóa
+        #   - Ván kết thúc bình thường / đã accept resign: VÁN MỚI như cũ
         if mode == "Online":
-            pending_resign = bool(
-                getattr(self, "_opp_resigned", False)
-                or getattr(self, "_i_resigned", False)
+            pending_offer = bool(
+                (getattr(self, "_opp_resigned", False) or getattr(self, "_i_resigned", False))
+                and not self.game_over
+            )
+            pending_resign_done = bool(
+                (getattr(self, "_opp_resigned", False) or getattr(self, "_i_resigned", False))
+                and self.game_over
+            )
+            can_accept = bool(
+                self.is_online_connected
+                and getattr(self, "_opp_resigned", False)
+                and not self.game_over
             )
             can_new = bool(
                 self.is_online_connected
                 and self.game_over
                 and not self.my_ready_for_rematch
-                and not pending_resign
             )
             new_btn_new_sig = (
                 "online",
                 can_new,
+                can_accept,
                 is_dark,
                 bool(self.game_over),
                 bool(self.my_ready_for_rematch),
-                pending_resign,
+                pending_offer,
+                pending_resign_done,
                 bool(self.is_online_connected),
             )
         else:
+            can_accept = False
             can_new = (len(self.history) > 0) or self.game_over
             new_btn_new_sig = ("offline", can_new, is_dark)
 
-        # Online + đang pending resign: luôn ép khóa (không phụ thuộc cache sig)
         force_apply = mode == "Online" and (
             getattr(self, "_opp_resigned", False)
             or getattr(self, "_i_resigned", False)
         )
         if force_apply or getattr(self, '_last_btn_new_sig', None) != new_btn_new_sig:
             if hasattr(self, 'btn_new') and self.btn_new.winfo_exists():
-                if not can_new:
+                if can_accept:
+                    # Người nhận yêu cầu đầu hàng → CHẤP NHẬN trên nút VÁN MỚI
                     self.btn_new.configure(
+                        text=self.t("accept_btn"),
+                        state="normal",
+                        fg_color="#166534",
+                        hover_color="#15803d",
+                        text_color="white",
+                    )
+                elif not can_new:
+                    self.btn_new.configure(
+                        text=self.t("new_game"),
                         state="disabled",
                         fg_color=disabled_bg,
                         hover_color=disabled_bg,
@@ -2061,6 +2094,7 @@ class XOUltraAI:
                     )
                 else:
                     self.btn_new.configure(
+                        text=self.t("new_game"),
                         state="normal",
                         fg_color="#e74c3c",
                         hover_color="#c0392b",
@@ -2252,6 +2286,10 @@ class XOUltraAI:
             if hasattr(self, "btn_resign"):
                 self.btn_resign.pack(side="left", padx=(0, 8))
                 self.update_resign_button()
+            if hasattr(self, "lbl_resign_countdown"):
+                # Chỉ hiện khi đang có yêu cầu pending
+                if (getattr(self, "_i_resigned", False) or getattr(self, "_opp_resigned", False)) and not self.game_over:
+                    self.lbl_resign_countdown.pack(side="left", padx=(0, 8))
 
             # Chat luôn hiện trong tab Online, ở khoảng trống bên trái 4 nút tiện ích.
             if hasattr(self, "chat_frame") and not self.chat_frame.winfo_ismapped():
@@ -2276,6 +2314,10 @@ class XOUltraAI:
             # Ẩn nút đầu hàng khi rời Online
             if hasattr(self, "btn_resign"):
                 self.btn_resign.pack_forget()
+            if hasattr(self, "lbl_resign_countdown"):
+                self.lbl_resign_countdown.pack_forget()
+                self.lbl_resign_countdown.configure(text="")
+            self._stop_resign_countdown()
 
             # Hiện lại các nút điều khiển
             self.btn_new.pack(side="left", padx=(0, 8))
@@ -2755,12 +2797,15 @@ class XOUltraAI:
 
         # Online: ưu tiên trạng thái resign / rematch / lượt
         if mode == "Online":
-            if getattr(self, "_i_resigned", False) and self.game_over:
+            if getattr(self, "_i_resigned", False):
                 self.display_status("you_resigned_wait", color="#f39c12")
                 return
-            if getattr(self, "_opp_resigned", False) and self.game_over:
+            if getattr(self, "_opp_resigned", False):
                 name = getattr(self, "_resign_name", "") or self.display_opponent_name()
-                self.display_status("opp_resigned_press_accept", color="#f39c12", format_args=[name])
+                if self.game_over:
+                    self.display_status("opp_resigned_press_accept", color="#f39c12", format_args=[name])
+                else:
+                    self.display_status("resign_offer_status", color="#f39c12", format_args=[name])
                 return
             if self.my_ready_for_rematch and not self.opponent_ready_for_rematch:
                 self.display_status("online_ready_wait", color="#f39c12")
@@ -3125,8 +3170,72 @@ class XOUltraAI:
         except Exception as e:
             messagebox.showerror(self.t("err_title"), str(e)); self.display_status("engine_err", color="#e74c3c"); return False
 
+
+    def _stop_resign_countdown(self):
+        """Hủy job đếm ngược yêu cầu đầu hàng và ẩn nhãn."""
+        job = getattr(self, "_resign_countdown_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._resign_countdown_job = None
+        self._resign_deadline_mono = None
+        if hasattr(self, "lbl_resign_countdown") and self.lbl_resign_countdown.winfo_exists():
+            self.lbl_resign_countdown.configure(text="")
+            try:
+                self.lbl_resign_countdown.pack_forget()
+            except Exception:
+                pass
+
+    def _start_resign_countdown(self, expires_in=15, deadline=None):
+        """Hiện đếm ngược đỏ sau nút ĐẦU HÀNG (15s mặc định)."""
+        self._stop_resign_countdown()
+        import time as _time
+        if deadline is not None:
+            try:
+                self._resign_deadline_mono = float(deadline)
+            except (TypeError, ValueError):
+                self._resign_deadline_mono = _time.time() + max(1, int(expires_in))
+        else:
+            self._resign_deadline_mono = _time.time() + max(1, int(expires_in))
+        if hasattr(self, "lbl_resign_countdown") and self.lbl_resign_countdown.winfo_exists():
+            # Pack ngay sau btn_resign nếu đang Online
+            if self.game_mode_var.get() == "Online":
+                try:
+                    if not self.lbl_resign_countdown.winfo_ismapped():
+                        self.lbl_resign_countdown.pack(side="left", padx=(0, 8), after=self.btn_resign)
+                except Exception:
+                    try:
+                        self.lbl_resign_countdown.pack(side="left", padx=(0, 8))
+                    except Exception:
+                        pass
+        self._tick_resign_countdown()
+
+    def _tick_resign_countdown(self):
+        """Cập nhật số giây còn lại màu đỏ mỗi 200ms."""
+        import time as _time
+        deadline = getattr(self, "_resign_deadline_mono", None)
+        if deadline is None or not (self._i_resigned or self._opp_resigned) or self.game_over:
+            self._stop_resign_countdown()
+            return
+        left = int(max(0, deadline - _time.time()))
+        if hasattr(self, "lbl_resign_countdown") and self.lbl_resign_countdown.winfo_exists():
+            self.lbl_resign_countdown.configure(text=str(left), text_color="#ef4444")
+        if left <= 0:
+            # Đợi server resign_expired; UI sẽ clear khi nhận packet
+            self._resign_countdown_job = None
+            return
+        self._resign_countdown_job = self.root.after(200, self._tick_resign_countdown)
+
     def update_resign_button(self):
-        """Cập nhật nhãn/trạng thái nút Đầu hàng ↔ Chấp nhận (chỉ Online)."""
+        """Cập nhật nhãn/trạng thái nút Đầu hàng ↔ Từ chối (chỉ Online).
+
+        - Người nhận yêu cầu: nút = TỪ CHỐI
+        - Người gửi yêu cầu: khóa nút chờ phản hồi (10s)
+        - Tối đa 2 lần yêu cầu / ván
+        - Vẫn chơi được khi có yêu cầu đang chờ
+        """
         if not hasattr(self, "btn_resign") or not self.btn_resign.winfo_exists():
             return
         if self.game_mode_var.get() != "Online":
@@ -3136,32 +3245,20 @@ class XOUltraAI:
         disabled_bg = "#21262d" if is_dark else "#e2e8f0"
         disabled_fg = "#6e7681" if is_dark else "#64748b"
         has_moves = bool(self.history)
+        pending = (self._opp_resigned or self._i_resigned) and not self.game_over
+        my_count = getattr(self, "_my_resign_count", 0)
 
-        # Đang chờ chấp nhận đầu hàng → VÁN MỚI phải xám
-        if (
-            hasattr(self, "btn_new")
-            and self.btn_new.winfo_exists()
-            and (self._opp_resigned or self._i_resigned)
-        ):
-            self.btn_new.configure(
-                state="disabled",
-                fg_color=disabled_bg,
-                hover_color=disabled_bg,
-                text_color=disabled_fg,
-            )
-            self._last_btn_new_sig = None  # lần update_pause sau sẽ tính lại
-
-        if self._opp_resigned and self.game_over:
-            # Đối thủ đã đầu hàng → nút CHẤP NHẬN
+        if self._opp_resigned and not self.game_over:
+            # Đối thủ gửi yêu cầu → TỪ CHỐI
             self.btn_resign.configure(
-                text=self.t("accept_btn"),
+                text=self.t("reject_btn"),
                 state="normal",
-                fg_color="#166534",
-                hover_color="#15803d",
+                fg_color="#7f1d1d",
+                hover_color="#991b1b",
                 text_color="white",
             )
-        elif self._i_resigned and self.game_over:
-            # Mình đã đầu hàng → chờ đối thủ, khóa nút
+        elif self._i_resigned and not self.game_over:
+            # Mình đã gửi yêu cầu → chờ
             self.btn_resign.configure(
                 text=self.t("resign_btn"),
                 state="disabled",
@@ -3174,8 +3271,9 @@ class XOUltraAI:
             and not self.game_over
             and has_moves
             and not self.my_ready_for_rematch
+            and not pending
+            and my_count < 2
         ):
-            # Đang chơi dở → cho phép ĐẦU HÀNG
             self.btn_resign.configure(
                 text=self.t("resign_btn"),
                 state="normal",
@@ -3192,8 +3290,9 @@ class XOUltraAI:
                 text_color=disabled_fg,
             )
 
+
     def on_resign_or_accept(self):
-        """Online: Đầu hàng khi đang chơi, hoặc Chấp nhận khi đối thủ đã đầu hàng."""
+        """Online: Đầu hàng khi đang chơi, hoặc Từ chối khi đối thủ gửi yêu cầu."""
         if self.game_mode_var.get() != "Online" or not self.is_online_connected:
             return
         ws = self.ws
@@ -3201,36 +3300,31 @@ class XOUltraAI:
             self.display_status("ws_not_connected", color="#ef4444")
             return
 
-        # Chấp nhận yêu cầu đầu hàng của đối thủ → gửi rematch (giống VÁN MỚI)
-        if self._opp_resigned and self.game_over:
-            if self.my_ready_for_rematch:
-                return
-            self.my_ready_for_rematch = True
+        # Từ chối yêu cầu đầu hàng (nút TỪ CHỐI)
+        if self._opp_resigned and not self.game_over:
             try:
-                ws.send(json.dumps({"type": "rematch"}))
+                ws.send(json.dumps({"type": "resign_reject"}))
             except Exception:
-                self.my_ready_for_rematch = False
                 self.display_status("online_disconnected", color="#ef4444")
                 return
-            self.display_status("online_ready_wait", color="#f39c12")
-            self.update_resign_button()
-            self.update_pause_btn_state()
             return
 
-        # Đầu hàng giữa ván
-        if self.game_over or not self.history or self._i_resigned:
+        # Gửi yêu cầu đầu hàng (tối đa 2 lần / ván)
+        if self.game_over or not self.history or self._i_resigned or self._opp_resigned:
+            return
+        if getattr(self, "_my_resign_count", 0) >= 2:
+            self.display_status("resign_limit_msg", color="#f39c12")
             return
         try:
             ws.send(json.dumps({"type": "resign"}))
         except Exception:
             self.display_status("online_disconnected", color="#ef4444")
             return
-        # Trạng thái chính thức chờ server xác nhận qua game_result.
-        # Tạm khóa nút để tránh spam.
         self._i_resigned = True
         self.update_resign_button()
         self.update_pause_btn_state()
         self.display_status("you_resigned_wait", color="#f39c12")
+
 
     def request_new_game(self, event=None):
         mode = self.game_mode_var.get()
@@ -3240,10 +3334,27 @@ class XOUltraAI:
                 self.display_status("online_enter_room", color="#f39c12")
                 return
 
-            # Chỉ cho bấm khi ván đã kết thúc (không dùng khi đang chờ Chấp nhận đầu hàng)
-            if getattr(self, "_opp_resigned", False) or getattr(self, "_i_resigned", False):
+            # Chấp nhận yêu cầu đầu hàng của đối thủ (nút VÁN MỚI = CHẤP NHẬN)
+            if getattr(self, "_opp_resigned", False) and not self.game_over:
+                ws = self.ws
+                if ws is None:
+                    self.display_status("ws_not_connected", color="#ef4444")
+                    return
+                try:
+                    ws.send(json.dumps({"type": "resign_accept"}))
+                except Exception:
+                    self.display_status("online_disconnected", color="#ef4444")
                 return
-            if not self.game_over and not self.opponent_ready_for_rematch:
+
+            # Mình đang chờ phản hồi đầu hàng → không cho bấm VÁN MỚI
+            if getattr(self, "_i_resigned", False) and not self.game_over:
+                return
+
+            # Sau khi đã chấp nhận (game_over + flags) hoặc ván kết thúc bình thường → rematch
+            if getattr(self, "_opp_resigned", False) or getattr(self, "_i_resigned", False):
+                # Cho phép bấm VÁN MỚI để gửi rematch sau khi resign đã được chấp nhận
+                pass
+            elif not self.game_over and not self.opponent_ready_for_rematch:
                 return
 
             # Không tự lật quân ở phía Client. Server sẽ quyết định quân cho ván mới
@@ -3276,6 +3387,15 @@ class XOUltraAI:
         self._i_resigned = False
         self._opp_resigned = False
         self._resign_name = ""
+        self._my_resign_count = 0
+        job = getattr(self, "_resign_offer_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._resign_offer_job = None
+        self._stop_resign_countdown()
 
         self.rebuild_board_widgets()
         self.game_over = False
@@ -4041,8 +4161,27 @@ class XOUltraAI:
                     # Server đã chốt thắng cho phía không đầu hàng.
                     if winner in ("X", "O"):
                         self.add_score(winner)
+                    auto_rm = bool(data.get("auto_rematch"))
                     name = (resigned_by or "").strip() or self.display_opponent_name()
-                    if resigned_symbol == self.online_symbol or self._i_resigned:
+                    job = getattr(self, "_resign_offer_job", None)
+                    if job:
+                        try:
+                            self.root.after_cancel(job)
+                        except Exception:
+                            pass
+                        self._resign_offer_job = None
+                    if auto_rm:
+                        # Chấp nhận xong → ván mới ngay (packet rematch sẽ tới tiếp).
+                        self._i_resigned = False
+                        self._opp_resigned = False
+                        self._resign_name = ""
+                        self._my_resign_count = 0
+                        self._stop_resign_countdown()
+                        if winner == self.online_symbol:
+                            self.display_status("online_you_win", color="#2ecc71", format_args=[winner])
+                        else:
+                            self.display_status("online_opp_win", color="#ef4444", format_args=[winner])
+                    elif resigned_symbol == self.online_symbol or self._i_resigned:
                         self._i_resigned = True
                         self._opp_resigned = False
                         self._resign_name = self.player_name_var.get().strip() or self.t("your_name")
@@ -4096,6 +4235,104 @@ class XOUltraAI:
                     self.handle_timeout(loser_sym)
             self._ws_after(generation, apply_timeout)
             
+        elif t == "resign_offer":
+            # Yêu cầu đầu hàng — vẫn chơi được; tự hết sau ~10s.
+            resigned_symbol = data.get("resigned_symbol")
+            resigned_by = (data.get("resigned_by") or "").strip()
+            expires_in = int(data.get("expires_in") or 15)
+            count = int(data.get("count") or 1)
+            def apply_resign_offer():
+                if self.game_over:
+                    return
+                # Hủy countdown cũ nếu có
+                job = getattr(self, "_resign_offer_job", None)
+                if job:
+                    try:
+                        self.root.after_cancel(job)
+                    except Exception:
+                        pass
+                    self._resign_offer_job = None
+
+                if resigned_symbol == self.online_symbol:
+                    self._i_resigned = True
+                    self._opp_resigned = False
+                    self._resign_name = self.player_name_var.get().strip() or self.t("your_name")
+                    self._my_resign_count = max(getattr(self, "_my_resign_count", 0), count)
+                    self.display_status("you_resigned_wait", color="#f39c12")
+                else:
+                    self._opp_resigned = True
+                    self._i_resigned = False
+                    self._resign_name = resigned_by or self.display_opponent_name()
+                    self.display_status(
+                        "resign_offer_status",
+                        color="#f39c12",
+                        format_args=[self._resign_name],
+                    )
+                self.update_resign_button()
+                self.update_pause_btn_state()
+                # Đếm ngược đỏ sau nút ĐẦU HÀNG
+                self._start_resign_countdown(expires_in=expires_in, deadline=data.get("deadline"))
+            self._ws_after(generation, apply_resign_offer)
+
+        elif t == "resign_rejected":
+            # Đối thủ từ chối → tiếp tục ván đấu.
+            def apply_resign_rejected():
+                was_mine = self._i_resigned
+                self._i_resigned = False
+                self._opp_resigned = False
+                self._resign_name = ""
+                self._stop_resign_countdown()
+                job = getattr(self, "_resign_offer_job", None)
+                if job:
+                    try:
+                        self.root.after_cancel(job)
+                    except Exception:
+                        pass
+                    self._resign_offer_job = None
+                if was_mine:
+                    self.display_status("resign_rejected_you", color="#f39c12")
+                else:
+                    self.display_status("resign_rejected_opp", color="#2ecc71")
+                self.update_resign_button()
+                self.update_pause_btn_state()
+                if self.is_online_turn:
+                    self.modern_canvas.configure(cursor="hand2")
+                else:
+                    self.modern_canvas.configure(cursor="watch")
+                self.update_turn_status()
+            self._ws_after(generation, apply_resign_rejected)
+
+        elif t == "resign_expired":
+            # Hết 15s không phản hồi → hủy yêu cầu.
+            def apply_resign_expired():
+                was_mine = self._i_resigned
+                self._i_resigned = False
+                self._opp_resigned = False
+                self._resign_name = ""
+                self._stop_resign_countdown()
+                job = getattr(self, "_resign_offer_job", None)
+                if job:
+                    try:
+                        self.root.after_cancel(job)
+                    except Exception:
+                        pass
+                    self._resign_offer_job = None
+                self.display_status("resign_expired_msg", color="#f39c12")
+                self.update_resign_button()
+                self.update_pause_btn_state()
+                if self.is_online_turn:
+                    self.modern_canvas.configure(cursor="hand2")
+                else:
+                    self.modern_canvas.configure(cursor="watch")
+                self.update_turn_status()
+            self._ws_after(generation, apply_resign_expired)
+
+        elif t == "resign_limit":
+            def apply_resign_limit():
+                self.display_status("resign_limit_msg", color="#f39c12")
+                self.update_resign_button()
+            self._ws_after(generation, apply_resign_limit)
+
         elif t == "rematch_waiting":
             # Một người đã bấm VÁN MỚI (hoặc đầu hàng) nhưng server chưa reset bàn vì còn
             # chờ người còn lại. Đồng bộ trạng thái READY sang máy đối diện.
@@ -4191,6 +4428,7 @@ class XOUltraAI:
         if self.game_mode_var.get() == "AI vs AI" or self.game_over or self.is_ai_thinking or self.board[r][c] != EMPTY: return
         
         if self.game_mode_var.get() == "Online":
+            # Vẫn được đánh khi có yêu cầu đầu hàng đang chờ.
             # Client chỉ được đánh khi đúng lượt mà SERVER đã chốt.
             # X luôn là lượt đầu tiên; O không thể tự đánh trước dù UI vừa đổi phe.
             server_turn = getattr(self, "_server_turn_symbol", None)
