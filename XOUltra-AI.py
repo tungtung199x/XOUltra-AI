@@ -3523,7 +3523,9 @@ class XOUltraAI:
         return None
 
     def warmup_online_server(self):
-        """Đánh thức Render bằng một websocket request tối giản, chạy hoàn toàn ở background."""
+        """Đánh thức Render bằng một websocket request tối giản, chạy hoàn toàn ở background.
+        Timeout dài hơn để chịu cold start (Render free có thể mất 30–60s lần đầu).
+        """
         if websocket is None:
             return
 
@@ -3534,23 +3536,32 @@ class XOUltraAI:
 
         def _warmup():
             ws = None
-            try:
-                ws = websocket.create_connection(SERVER_URL, timeout=8)
-                ws.send(json.dumps({"action": "warmup"}))
+            # Thử tối đa 2 lần: lần 1 đánh thức, lần 2 xác nhận đã dậy.
+            for attempt in range(2):
                 try:
-                    ws.recv()
+                    # 45s đủ cho cold start Render free; lần 2 nhanh hơn nếu đã dậy.
+                    ws = websocket.create_connection(
+                        SERVER_URL, timeout=45 if attempt == 0 else 12
+                    )
+                    ws.send(json.dumps({"action": "warmup"}))
+                    try:
+                        ws.recv()
+                    except Exception:
+                        pass
+                    break  # Thành công → dừng
                 except Exception:
-                    pass
-            except Exception:
-                # Warm-up chỉ là tối ưu hiệu năng; lỗi ở đây không được làm ảnh hưởng app/game.
-                pass
-            finally:
-                try:
-                    if ws:
-                        ws.close()
-                except Exception:
-                    pass
-                self._warmup_in_progress = False
+                    # Warm-up chỉ là tối ưu; lỗi không ảnh hưởng app/game.
+                    if attempt == 0:
+                        time.sleep(2)
+                    continue
+                finally:
+                    try:
+                        if ws:
+                            ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+            self._warmup_in_progress = False
 
         threading.Thread(target=_warmup, daemon=True).start()
 
