@@ -107,6 +107,33 @@ TIME_SOUND_PATH = os.path.join(BASE_DIR, "sounds", "time.wav")
 ICON_ICO_PATH = os.path.join(BASE_DIR, "Ultra.ico")
 ICON_ICNS_PATH = os.path.join(BASE_DIR, "Ultra.icns")
 
+# ==================== MAC: CHUẨN BỊ ENGINE ====================
+def _prepare_mac_engine(path: str) -> None:
+    """Tự chmod + gỡ quarantine để macOS không chặn engine."""
+    if sys.platform != "darwin" or not path or not os.path.exists(path):
+        return
+    try:
+        os.chmod(path, 0o755)
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["xattr", "-d", "com.apple.quarantine", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["xattr", "-cr", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except Exception:
+        pass
+
+_prepare_mac_engine(ENGINE_PATH)
+# ==============================================================
+
 if sys.platform == "win32":
     app_data_dir = os.path.join(os.environ.get("APPDATA", BASE_DIR), "XOUltraAI")
 elif sys.platform == "darwin":
@@ -172,6 +199,19 @@ class UltraAIEngine:
     def start(self):
         if not os.path.exists(self.path): 
             raise FileNotFoundError(f"Không tìm thấy engine tại: {self.path}")
+
+        if sys.platform == "darwin":
+            try:
+                os.chmod(self.path, 0o755)
+            except Exception:
+                pass
+            try:
+                subprocess.run(
+                    ["xattr", "-d", "com.apple.quarantine", self.path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                )
+            except Exception:
+                pass
             
         creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         self.proc = subprocess.Popen(
