@@ -94,6 +94,15 @@ if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Thư mục cấu hình / engine runtime (APPDATA) — định nghĩa sớm cho get_engine_runtime_dir
+if sys.platform == "win32":
+    app_data_dir = os.path.join(os.environ.get("APPDATA", BASE_DIR), "XOUltraAI")
+elif sys.platform == "darwin":
+    app_data_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "XOUltraAI")
+else:
+    app_data_dir = BASE_DIR
+os.makedirs(app_data_dir, exist_ok=True)
+
 # ==================== CẤU HÌNH SERVER ONLINE ====================
 SERVER_URL = "wss://caroultra-ai-online.onrender.com" 
 # ================================================================
@@ -108,18 +117,114 @@ else:
     ENGINE_FILENAME_STANDARD = "pbrain-rapfi-mac"
     ENGINE_FILENAME_CARO = "pbrain-rapfi-mac"
 
+# Tên file — đường dẫn thật resolve lúc runtime (xem get_engine_runtime_dir)
 ENGINE_PATH_STANDARD = os.path.join(BASE_DIR, ENGINE_FILENAME_STANDARD)
 ENGINE_PATH_CARO = os.path.join(BASE_DIR, ENGINE_FILENAME_CARO)
 ENGINE_PATH = ENGINE_PATH_STANDARD
 ENGINE_FILENAME = ENGINE_FILENAME_STANDARD
 
+# DLL runtime thường đi kèm engine (MinGW) — copy cùng khi đóng gói onefile
+_ENGINE_RUNTIME_DLLS = (
+    "libgcc_s_seh-1.dll",
+    "libgomp-1.dll",
+    "libstdc++-6.dll",
+    "libwinpthread-1.dll",
+    "libdl.dll",
+)
+
+_engine_runtime_dir_cache = None
+
+def get_engine_runtime_dir():
+    """Thư mục chạy engine thật sự.
+
+    PyInstaller --onefile giải nén ra %TEMP%\\_MEIxxxx — một số engine (Caro)
+    load networks/DLL không ổn từ đó. Copy engine + networks (+ DLL) sang
+    APPDATA/XOUltraAI/engines (ổn định, ghi được) rồi chạy từ đó.
+    Dev mode: dùng BASE_DIR.
+    """
+    global _engine_runtime_dir_cache, ENGINE_PATH_STANDARD, ENGINE_PATH_CARO, ENGINE_PATH
+    if _engine_runtime_dir_cache is not None:
+        return _engine_runtime_dir_cache
+
+    frozen = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+    if not frozen:
+        _engine_runtime_dir_cache = BASE_DIR
+        return _engine_runtime_dir_cache
+
+    dest_root = os.path.join(app_data_dir, "engines")
+    os.makedirs(dest_root, exist_ok=True)
+    src_root = BASE_DIR  # _MEIPASS
+
+    def _need_copy(src, dst):
+        if not os.path.exists(src):
+            return False
+        if not os.path.exists(dst):
+            return True
+        try:
+            return os.path.getsize(src) != os.path.getsize(dst) or os.path.getmtime(src) > os.path.getmtime(dst) + 1
+        except OSError:
+            return True
+
+    def _copy_file(name):
+        src = os.path.join(src_root, name)
+        dst = os.path.join(dest_root, name)
+        if not os.path.exists(src):
+            return
+        if _need_copy(src, dst):
+            import shutil
+            shutil.copy2(src, dst)
+
+    def _copy_tree(rel):
+        src = os.path.join(src_root, rel)
+        dst = os.path.join(dest_root, rel)
+        if not os.path.isdir(src):
+            return
+        import shutil
+        if not os.path.isdir(dst):
+            shutil.copytree(src, dst)
+            return
+        # Đồng bộ file lẻ trong networks
+        for root, _dirs, files in os.walk(src):
+            rel_root = os.path.relpath(root, src)
+            out_dir = dst if rel_root == "." else os.path.join(dst, rel_root)
+            os.makedirs(out_dir, exist_ok=True)
+            for fn in files:
+                s = os.path.join(root, fn)
+                d = os.path.join(out_dir, fn)
+                if _need_copy(s, d):
+                    shutil.copy2(s, d)
+
+    try:
+        _copy_file(ENGINE_FILENAME_STANDARD)
+        _copy_file(ENGINE_FILENAME_CARO)
+        for dll in _ENGINE_RUNTIME_DLLS:
+            _copy_file(dll)
+        _copy_tree("networks")
+        # config.json nếu có (một số bản engine đọc)
+        _copy_file("config.json")
+    except Exception as e:
+        print(f"[ENGINE] copy to AppData failed: {e}")
+        _engine_runtime_dir_cache = src_root
+        return _engine_runtime_dir_cache
+
+    # Cập nhật path global sau khi copy
+    ENGINE_PATH_STANDARD = os.path.join(dest_root, ENGINE_FILENAME_STANDARD)
+    ENGINE_PATH_CARO = os.path.join(dest_root, ENGINE_FILENAME_CARO)
+    ENGINE_PATH = ENGINE_PATH_STANDARD
+    _engine_runtime_dir_cache = dest_root
+    print(f"[ENGINE] runtime dir: {dest_root}")
+    return _engine_runtime_dir_cache
+
 def get_engine_path_and_rule(standard_rule: bool):
     """Trả về (path, rule_code). Windows + Chặn 2 đầu → engine Caro (rule 8)."""
+    runtime = get_engine_runtime_dir()
+    path_std = os.path.join(runtime, ENGINE_FILENAME_STANDARD)
+    path_caro = os.path.join(runtime, ENGINE_FILENAME_CARO)
     if standard_rule or sys.platform != "win32":
-        return ENGINE_PATH_STANDARD, 1
-    if os.path.isfile(ENGINE_PATH_CARO):
-        return ENGINE_PATH_CARO, 8  # Caro
-    return ENGINE_PATH_STANDARD, 0
+        return path_std, 1
+    if os.path.isfile(path_caro):
+        return path_caro, 8  # Caro
+    return path_std, 0
 
 TING_SOUND_PATH = os.path.join(BASE_DIR, "sounds", "ting.wav")
 VICTORY_SOUND_PATH = os.path.join(BASE_DIR, "sounds", "victory.wav")
@@ -156,14 +261,6 @@ _prepare_mac_engine(ENGINE_PATH_STANDARD)
 _prepare_mac_engine(ENGINE_PATH_CARO)
 # ==============================================================
 
-if sys.platform == "win32":
-    app_data_dir = os.path.join(os.environ.get("APPDATA", BASE_DIR), "XOUltraAI")
-elif sys.platform == "darwin":
-    app_data_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "XOUltraAI")
-else:
-    app_data_dir = BASE_DIR
-
-os.makedirs(app_data_dir, exist_ok=True)
 CONFIG_PATH = os.path.join(app_data_dir, "xoultra_ai_settings.json")
 
 DEFAULT_DIFF = {"Cao thủ (0.2s)": 200, "Đỉnh cao (5s)": 5000, "Siêu cấp (12s)": 12000, "Vô cực (20s)": 20000}
