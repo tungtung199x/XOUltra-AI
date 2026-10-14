@@ -65,18 +65,16 @@ jobs:
 
     - name: Build with PyInstaller (Windows)
       shell: cmd
-      run: >
-        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI"
-        --icon "Ultra.ico"
-        --add-data "Ultra.ico;."
-        --add-data "translations.json;."
-        --add-data "pbrain-rapfi-windows-avx2.exe;."
-        --add-data "pbrain-alphagomoku-caro.exe;."
-        --add-data "networks;networks"
-        --add-data "sounds;sounds"
-        --add-data "icons;icons"
-        "XOUltra-AI.py"
-        && move dist\XOUltra-AI.exe .
+      run: |
+        set ADD_DLL=
+        if exist libgcc_s_seh-1.dll set ADD_DLL=%ADD_DLL% --add-data "libgcc_s_seh-1.dll;."
+        if exist libgomp-1.dll set ADD_DLL=%ADD_DLL% --add-data "libgomp-1.dll;."
+        if exist libstdc++-6.dll set ADD_DLL=%ADD_DLL% --add-data "libstdc++-6.dll;."
+        if exist libwinpthread-1.dll set ADD_DLL=%ADD_DLL% --add-data "libwinpthread-1.dll;."
+        if exist libdl.dll set ADD_DLL=%ADD_DLL% --add-data "libdl.dll;."
+        if exist config.json set ADD_DLL=%ADD_DLL% --add-data "config.json;."
+        pyinstaller --clean --noconsole --onefile --name "XOUltra-AI" --icon "Ultra.ico" --add-data "Ultra.ico;." --add-data "translations.json;." --add-data "pbrain-rapfi-windows-avx2.exe;." --add-data "pbrain-alphagomoku-caro.exe;." --add-data "networks;networks" --add-data "sounds;sounds" --add-data "icons;icons" %ADD_DLL% "XOUltra-AI.py"
+        move dist\XOUltra-AI.exe .
 
     - name: Upload Windows Artifact
       uses: actions/upload-artifact@v4
