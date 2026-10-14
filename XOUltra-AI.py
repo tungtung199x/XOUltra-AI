@@ -99,8 +99,8 @@ SERVER_URL = "wss://caroultra-ai-online.onrender.com"
 # ================================================================
 
 # ==================== ENGINE PATHS ====================
-# Windows: Rapfi (Tiêu chuẩn) + AlphaGomoku (Chặn 2 đầu / Caro)
-# macOS  : chỉ Rapfi
+# Windows: engine luật Tiêu chuẩn + engine luật Chặn 2 đầu
+# macOS  : chỉ engine luật Tiêu chuẩn
 if sys.platform == "win32":
     ENGINE_FILENAME_STANDARD = "pbrain-rapfi-windows-avx2.exe"
     ENGINE_FILENAME_CARO = "pbrain-alphagomoku-caro.exe"
@@ -114,7 +114,7 @@ ENGINE_PATH = ENGINE_PATH_STANDARD
 ENGINE_FILENAME = ENGINE_FILENAME_STANDARD
 
 def get_engine_path_and_rule(standard_rule: bool):
-    """Trả về (path, rule_code). Windows + Chặn 2 đầu → AlphaGomoku (rule 8)."""
+    """Trả về (path, rule_code). Windows + Chặn 2 đầu → engine Caro (rule 8)."""
     if standard_rule or sys.platform != "win32":
         return ENGINE_PATH_STANDARD, 1
     if os.path.isfile(ENGINE_PATH_CARO):
@@ -180,7 +180,8 @@ DEFAULT_LANG = {
     "timeout_msg": "HẾT GIỜ! NGƯỜI CHƠI ({}) THẮNG DO ĐỐI THỦ CẠN THỜI GIAN!", "resgin_status": "ULTRA-AI ({}) XIN THUA!", 
     "err_title": "Lỗi", "limit_warn": "Kích thước bàn cờ hỗ trợ tối đa là 20x20!", "warning_title": "Thông báo", "rules_list": ["Tiêu chuẩn", "Chặn 2 đầu"],
     "sound_on": "🔊 Bật", "sound_off": "🔇 Tắt", "ai_ready": "Sẵn sàng! Bấm BẮT ĐẦU để AI đấu.", "unlimited_time": "⏱ Không giới hạn thời gian",
-    "block_rule_warn": "Luật Chặn 2 đầu dùng engine AlphaGomoku (Caro). Chế độ AI chỉ hỗ trợ bàn 15×15.",
+    "block_rule_warn": "Luật Chặn 2 đầu: chế độ AI chỉ hỗ trợ bàn 15×15.",
+    "block_rule_warn_mac": "Trên macOS chưa hỗ trợ luật Chặn 2 đầu cho AI. AI vẫn suy nghĩ theo luật Tiêu chuẩn. Muốn AI chơi đúng luật này hãy dùng bản Windows, hoặc chơi 2 Người / Online để có trải nghiệm tốt nhất!",
     "engine_err": "Lỗi khởi động engine", "ai_not_resp": "Ultra-AI chưa trả nước đi", "ai_err": "Lỗi AI", "sync_err": "Lỗi đồng bộ AI",
     "undo_msg": "Đã LÙI 1 BƯỚC. ", "redo_msg": "Đã TIẾN 1 BƯỚC. "
 }
@@ -214,7 +215,7 @@ class UltraAIEngine:
         self.board_size = board_size
         self.time_turn = time_turn
         self.rule = rule
-        self.is_alpha = (rule == 8)  # AlphaGomoku Caro
+        self.is_caro_engine = (rule == 8)  # engine luật Chặn 2 đầu
         self.proc = None
         self.running = False
         self.q = queue.Queue()
@@ -256,19 +257,18 @@ class UltraAIEngine:
             if resp and "OK" in resp.upper(): 
                 break
 
-        # Rapfi: nhiều thread giúp α-β. AlphaGomoku KHÔNG hỗ trợ INFO thread_num
-        # (log: UNKNOWN 'info thread_num N') — chỉ gửi cho Rapfi.
+        # Engine Tiêu chuẩn: nhiều thread. Engine Caro không hỗ trợ INFO thread_num.
         cpu = os.cpu_count() or 8
         self.send(f"INFO timeout_turn {self.time_turn}")
         self.send(f"INFO rule {self.rule}")
         self.send("INFO max_memory 4294967296")
-        if not self.is_alpha:
+        if not self.is_caro_engine:
             thread_num = max(14, min(cpu, 32))
             self.send(f"INFO thread_num {thread_num}")
         self.send("INFO game_type 0")  # 0 = đối thủ người
         self.send("INFO time_left 99999999")
-        # Alpha cold-start NN chậm; cho thêm chút thời gian ổn định trước nước đầu
-        time.sleep(0.08 if self.is_alpha else 0.05)
+        # Engine Caro cold-start chậm hơn — chờ thêm trước nước đầu
+        time.sleep(0.08 if self.is_caro_engine else 0.05)
 
     def _reader(self):
         while self.running and self.proc and self.proc.poll() is None:
@@ -290,7 +290,7 @@ class UltraAIEngine:
 
     def send_time_left(self, ms=None):
         """Protocol khuyến nghị gửi time_left trước mỗi TURN/BEGIN/BOARD.
-        Giúp Alpha (time manager cải tiến) phân bổ thời gian đúng ở mức ngắn."""
+        Giúp engine phân bổ thời gian đúng ở mức suy nghĩ ngắn."""
         left = int(ms if ms is not None else max(self.time_turn * 40, 99999999))
         self.send(f"INFO time_left {left}")
 
@@ -451,7 +451,7 @@ class XOUltraAI:
         return rules[1] if self.rule_to_canonical(rule_text) == "block_both_ends" else rules[0]
 
     def _should_force_15x15_for_caro_ai(self):
-        """True khi đang ở chế độ có AI + luật Chặn 2 đầu (AlphaGomoku chỉ hỗ trợ 15x15)."""
+        """True khi đang ở chế độ có AI + luật Chặn 2 đầu (engine Caro chỉ hỗ trợ 15x15)."""
         mode = self.game_mode_var.get()
         if mode not in ("Ultra-AI", "AI vs AI"):
             return False
@@ -1532,9 +1532,17 @@ class XOUltraAI:
         if self.game_mode_var.get() == "Online" and (self.history or self.game_over):
             return
         self.save_settings()
-        # AI modes + Chặn 2 đầu → AlphaGomoku chỉ hỗ trợ 15x15 → tự chuyển bàn
+        # AI modes + Chặn 2 đầu → engine Caro chỉ 15x15 → tự chuyển bàn
         self._enforce_board_for_caro_ai()
         self.send_online_settings()
+        # macOS không có engine Caro: cảnh báo khi chọn Chặn 2 đầu ở chế độ AI
+        if sys.platform != "win32" and self.rule_to_canonical(value) == "block_both_ends":
+            mode = self.game_mode_var.get()
+            if mode in ("Ultra-AI", "AI vs AI"):
+                try:
+                    messagebox.showinfo(self.t("warning_title"), self.t("block_rule_warn_mac"))
+                except Exception:
+                    pass
 
     def load_settings(self):
         if not os.path.exists(CONFIG_PATH): return
@@ -3050,7 +3058,7 @@ class XOUltraAI:
             self.board_size_var.set("15x15")
             messagebox.showinfo(
                 self.t("warning_title"),
-                "Luật Chặn 2 đầu + chế độ AI chỉ hỗ trợ bàn 15x15 (AlphaGomoku).\nĐã tự động chuyển về 15x15."
+                "Luật Chặn 2 đầu + chế độ AI chỉ hỗ trợ bàn 15x15 .\nĐã tự động chuyển về 15x15."
             )
         self.save_settings()
         # Đồng bộ ngay lập tức cho cả hai bên. Server sẽ broadcast lại trạng thái cuối cùng.
@@ -3344,14 +3352,14 @@ class XOUltraAI:
     def _scale_time_for_engine(self, base_ms):
         """Scale thời gian suy nghĩ theo engine.
 
-        Rapfi (NNUE α-β): giữ nguyên — đã tối ưu mạnh ở 0.2s.
-        AlphaGomoku (MCTS + rule Caro, CPU): NN chậm, AI vs AI còn restart/BOARD
+        Engine Tiêu chuẩn: giữ nguyên thời gian UI (đã tối ưu ở 0.2s).
+        Engine Caro: cần thêm thời gian thực tế vì khởi động/search chậm hơn
         mỗi nước → cần timeout thực cao hơn nhiều để có đủ node tính chặn/cờ kép.
         Nhãn UI vẫn 0.2s / 5s...; timeout thực gửi engine cao hơn.
         """
         if self.is_standard_rule or sys.platform != "win32":
             return int(base_ms)
-        # Alpha / Chặn 2 đầu — floor cao vì log thực tế chỉ ~1–50 node ở 0.5s
+        # Luật Chặn 2 đầu — floor thời gian cao hơn để search đủ sâu
         if base_ms <= 300:
             # Cao thủ 0.2s → 1.5s thực (mục tiêu vài trăm node trở lên)
             return max(int(base_ms * 7.5), 1500)
@@ -4836,7 +4844,7 @@ class XOUltraAI:
             urgent = self.find_urgent_move(self.current_turn)
             if urgent: self._apply_ai_move(*urgent, self.current_turn, generation=generation); return
             if generation != self._ai_generation or not self.engine: return
-            # Gửi time_left trước TURN — giúp Alpha phân bổ thời gian đúng
+            # Gửi time_left trước TURN — giúp engine phân bổ thời gian đúng
             self.engine.send_time_left()
             self.engine.send(f"TURN {x},{y}")
             self._process_engine_turn(self.current_turn, HUMAN if self.current_turn == AI else AI, generation)
@@ -4882,7 +4890,7 @@ class XOUltraAI:
             eng_path, rule_code = get_engine_path_and_rule(standard_rule)
 
             # Tái sử dụng engine đang chạy nếu cùng path/size/rule/time — tránh cold-start
-            # NN của Alpha mỗi nước (log: n=1 vì phần lớn thời gian tốn vào khởi động).
+            # Tránh cold-start engine mỗi nước (log: n=1 vì tốn thời gian khởi động).
             local_engine = None
             reuse = False
             existing = self.engine
@@ -4916,7 +4924,7 @@ class XOUltraAI:
                 self.root.after(0, self._install_synced_engine, local_engine, generation)
             if urgent := self.find_urgent_move(ai_side, board_snapshot, board_size, standard_rule):
                 self._apply_ai_move(*urgent, ai_side, generation=generation); return
-            # Gửi time_left trước khi bắt đầu suy nghĩ (protocol + Alpha time manager)
+            # Gửi time_left trước khi bắt đầu suy nghĩ (protocol)
             local_engine.send_time_left()
             if history_snapshot:
                 local_engine.send("BOARD")
@@ -5057,7 +5065,7 @@ class XOUltraAI:
         hint_cell = None
         try:
             eng_path, rule_code = get_engine_path_and_rule(standard_rule)
-            # Hint: Alpha cần thêm thời gian để gợi ý chất lượng gần Rapfi
+            # Hint: luật Caro cần thêm thời gian để gợi ý chất lượng
             hint_ms = 1200 if rule_code == 8 else 500
             temp_engine = UltraAIEngine(eng_path, board_size, hint_ms, rule_code)
             temp_engine.start()
