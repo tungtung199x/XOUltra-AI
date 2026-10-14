@@ -224,6 +224,18 @@ class UltraAIEngine:
         if not os.path.exists(self.path): 
             raise FileNotFoundError(f"Không tìm thấy engine tại: {self.path}")
 
+        # Thư mục chứa engine (+ networks khi đóng gói PyInstaller/_MEIPASS).
+        # Bắt buộc set cwd về đây — engine Caro tìm weights theo thư mục làm việc,
+        # không phải theo vị trí file .exe người dùng double-click.
+        engine_dir = os.path.dirname(os.path.abspath(self.path)) or BASE_DIR
+        if self.is_caro_engine:
+            net_dir = os.path.join(engine_dir, "networks")
+            if not os.path.isdir(net_dir):
+                raise FileNotFoundError(
+                    f"Không tìm thấy thư mục networks cạnh engine:\n{net_dir}\n"
+                    "Bản đóng gói cần kèm networks (model AI luật Chặn 2 đầu)."
+                )
+
         if sys.platform == "darwin":
             try:
                 os.chmod(self.path, 0o755)
@@ -245,17 +257,25 @@ class UltraAIEngine:
             stderr=subprocess.STDOUT, 
             text=True, 
             bufsize=1, 
+            cwd=engine_dir,
             creationflags=creation_flags
         )
         self.running = True
         threading.Thread(target=self._reader, daemon=True).start()
         
         self.send(f"START {self.board_size}")
-        time.sleep(0.1)
-        for _ in range(4):
-            resp = self.get_response(timeout=0.3)
+        # Engine Caro load NN lần đầu có thể chậm hơn
+        ok = False
+        tries = 12 if self.is_caro_engine else 4
+        wait = 0.5 if self.is_caro_engine else 0.3
+        for _ in range(tries):
+            resp = self.get_response(timeout=wait)
             if resp and "OK" in resp.upper(): 
+                ok = True
                 break
+        if not ok and self.is_caro_engine:
+            # Vẫn gửi INFO — một số bản không echo OK kịp nhưng vẫn chạy
+            print("[ENGINE] START: chưa nhận OK (Caro) — tiếp tục")
 
         # Engine Tiêu chuẩn: nhiều thread. Engine Caro không hỗ trợ INFO thread_num.
         cpu = os.cpu_count() or 8
@@ -267,8 +287,8 @@ class UltraAIEngine:
             self.send(f"INFO thread_num {thread_num}")
         self.send("INFO game_type 0")  # 0 = đối thủ người
         self.send("INFO time_left 99999999")
-        # Engine Caro cold-start chậm hơn — chờ thêm trước nước đầu
-        time.sleep(0.08 if self.is_caro_engine else 0.05)
+        # Engine Caro cold-start NN — chờ load xong trước nước đầu
+        time.sleep(0.35 if self.is_caro_engine else 0.05)
 
     def _reader(self):
         while self.running and self.proc and self.proc.poll() is None:
@@ -4816,7 +4836,11 @@ class XOUltraAI:
         engine = self.engine if engine is None else engine
         for _ in range(40):
             if generation != self._ai_generation or engine is None or self.is_ai_match_paused: return
-            response = engine.get_response(timeout=max(10, int(engine.time_turn) // 1000 + 3))
+            # Caro cold-start + search: cho thêm thời gian chờ nước đi
+            base_wait = max(10, int(engine.time_turn) // 1000 + 3)
+            if getattr(engine, "is_caro_engine", False):
+                base_wait = max(base_wait, int(engine.time_turn) // 1000 + 8, 15)
+            response = engine.get_response(timeout=base_wait)
             if generation != self._ai_generation or self.is_ai_match_paused: return
             if not response:
                 continue
