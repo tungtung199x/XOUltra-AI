@@ -165,13 +165,13 @@ jobs:
           Automatic release for the XOUltra-AI game.
 
           🪟 **Windows**: Download `XOUltra-AI-Windows.exe`
-          - Luật Tiêu chuẩn
-          - Luật Chặn 2 đầu (AI hỗ trợ đầy đủ, bàn 15×15)
+          - Standard rules
+          - Block-both-ends rules (full AI support, 15×15 board)
 
           🍏 **macOS**: Download `XOUltra-AI-MacOS`
-          - Luật Tiêu chuẩn (AI đầy đủ)
-          - Luật Chặn 2 đầu: AI vẫn suy nghĩ theo Tiêu chuẩn; chơi 2 Người / Online vẫn chấm thắng đúng
+          - Standard rules (full AI)
+          - Block-both-ends: AI still thinks by Standard rules; 2 Players / Online still score wins correctly
 
-          > macOS: lần đầu mở → chuột phải → Open để bỏ qua Gatekeeper.
+          > macOS first launch: right-click → Open to bypass Gatekeeper.
         draft: false
         prerelease: false
