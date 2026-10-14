@@ -26,6 +26,43 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller customtkinter pillow websocket-client
 
+    # networks/ bắt buộc cho engine luật Chặn 2 đầu trên Windows
+    - name: Verify required files (Windows)
+      shell: bash
+      run: |
+        set -e
+        echo "=== Repo root ==="
+        ls -la
+        missing=0
+        for f in \
+          "XOUltra-AI.py" \
+          "translations.json" \
+          "Ultra.ico" \
+          "pbrain-rapfi-windows-avx2.exe" \
+          "pbrain-alphagomoku-caro.exe" \
+          "sounds" \
+          "icons" \
+          "networks"
+        do
+          if [ ! -e "$f" ]; then
+            echo "MISSING: $f"
+            missing=1
+          else
+            echo "OK: $f"
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          echo ""
+          echo "ERROR: Thiếu file/thư mục bắt buộc (thường là networks/ chưa push lên GitHub)."
+          echo "  git add networks/"
+          echo "  git commit -m \"Add AI networks\""
+          echo "  git push"
+          echo "Nếu bị ignore: kiểm tra .gitignore rồi bỏ dòng networks."
+          exit 1
+        fi
+        echo "=== networks (sample) ==="
+        ls -la networks | head -20
+
     - name: Build with PyInstaller (Windows)
       shell: cmd
       run: >
@@ -64,6 +101,17 @@ jobs:
 
     - name: Make engine executable
       run: chmod +x pbrain-rapfi-mac
+
+    - name: Verify required files (macOS)
+      run: |
+        set -e
+        for f in XOUltra-AI.py translations.json Ultra.icns pbrain-rapfi-mac sounds icons; do
+          if [ ! -e "$f" ]; then
+            echo "MISSING: $f"
+            exit 1
+          fi
+          echo "OK: $f"
+        done
 
     - name: Build with PyInstaller (macOS)
       run: |
@@ -115,14 +163,15 @@ jobs:
         name: XOUltra-AI v1.0.${{ github.run_number }}
         body: |
           Automatic release for the XOUltra-AI game.
-          
+
           🪟 **Windows**: Download `XOUltra-AI-Windows.exe`
-          - Luật Tiêu chuẩn → Rapfi
-          - Luật Chặn 2 đầu → AlphaGomoku (Caro)
-          
+          - Luật Tiêu chuẩn
+          - Luật Chặn 2 đầu (AI hỗ trợ đầy đủ, bàn 15×15)
+
           🍏 **macOS**: Download `XOUltra-AI-MacOS`
-          - Chỉ dùng Rapfi (AlphaGomoku chưa có bản Mac)
-          
-          > Note for macOS users: After downloading, right-click the file → Open (first time) to bypass Gatekeeper.
+          - Luật Tiêu chuẩn (AI đầy đủ)
+          - Luật Chặn 2 đầu: AI vẫn suy nghĩ theo Tiêu chuẩn; chơi 2 Người / Online vẫn chấm thắng đúng
+
+          > macOS: lần đầu mở → chuột phải → Open để bỏ qua Gatekeeper.
         draft: false
         prerelease: false
