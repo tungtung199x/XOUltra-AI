@@ -34,6 +34,8 @@ jobs:
         --add-data "Ultra.ico;."
         --add-data "translations.json;."
         --add-data "pbrain-rapfi-windows-avx2.exe;."
+        --add-data "pbrain-alphagomoku-caro.exe;."
+        --add-data "networks;networks"
         --add-data "sounds;sounds"
         --add-data "icons;icons"
         "XOUltra-AI.py"
@@ -115,8 +117,11 @@ jobs:
           Automatic release for the XOUltra-AI game.
           
           🪟 **Windows**: Download `XOUltra-AI-Windows.exe`
+          - Luật Tiêu chuẩn → Rapfi
+          - Luật Chặn 2 đầu → AlphaGomoku (Caro)
           
           🍏 **macOS**: Download `XOUltra-AI-MacOS`
+          - Chỉ dùng Rapfi (AlphaGomoku chưa có bản Mac)
           
           > Note for macOS users: After downloading, right-click the file → Open (first time) to bypass Gatekeeper.
         draft: false
