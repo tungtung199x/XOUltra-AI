@@ -147,10 +147,6 @@ def get_engine_runtime_dir():
         return _engine_runtime_dir_cache
 
     frozen = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
-    if not frozen:
-        _engine_runtime_dir_cache = BASE_DIR
-        return _engine_runtime_dir_cache
-
     dest_root = os.path.join(app_data_dir, "engines")
     os.makedirs(dest_root, exist_ok=True)
     src_root = BASE_DIR  # _MEIPASS
@@ -506,6 +502,11 @@ class XOUltraAI:
         self._resign_name = ""
         self._my_resign_count = 0  # số lần đã gửi cầu hòa trong ván
         self._resign_offer_job = None  # local countdown cancel
+        # Online đầu hàng (surrender): xác nhận 10s trên nút VÁN MỚI
+        self._surrender_confirming = False
+        self._surrender_confirm_job = None
+        self._surrender_confirm_deadline = None
+        self._surrender_pending = False  # đã gửi surrender, chờ server — không hiện lại ĐẦU HÀNG
 
         self.lang_var = ctk.StringVar(value="VI")
         self.game_mode_var = ctk.StringVar(value="Ultra-AI")
@@ -987,16 +988,64 @@ class XOUltraAI:
         }
         return light_status_colors.get(key, color)
 
-    def display_status(self, key, color=None, format_args=None, prefix_key=None, raw_text=False):
-        if raw_text:
+    def _format_status_args(self, key, format_args):
+        """Chuẩn hóa args theo ngôn ngữ hiện tại (luật, v.v.) trước khi format."""
+        args = list(format_args or [])
+        if key == "rule_changed" and len(args) >= 2:
+            # args[1] có thể là canonical hoặc nhãn cũ → luôn đổi sang nhãn ngôn ngữ hiện tại
+            args[1] = self.rule_to_display(args[1])
+        return args
+
+    def _render_status_text(self, key, format_args=None, prefix_key=None):
+        text = self.t(key)
+        args = self._format_status_args(key, format_args)
+        if args:
+            try:
+                text = text.format(*args)
+            except Exception:
+                pass
+        if prefix_key:
+            text = self.t(prefix_key) + text
+        return text
+
+    def display_status(self, key, color=None, format_args=None, prefix_key=None, raw_text=False, parts=None):
+        """Hiển thị status. Ưu tiên key/parts để đổi ngôn ngữ vẫn dịch đúng.
+
+        parts: list of (key, format_args) — ghép bằng ' · '
+        """
+        if parts is not None:
+            # Lưu dạng có thể dịch lại khi đổi VI/EN
+            norm_parts = []
+            texts = []
+            for item in parts:
+                if not item:
+                    continue
+                pk = item[0]
+                pargs = list(item[1]) if len(item) > 1 and item[1] is not None else []
+                # rule_changed: lưu canonical để đổi ngôn ngữ dịch lại luật
+                if pk == "rule_changed" and len(pargs) >= 2:
+                    pargs[1] = self.rule_to_canonical(pargs[1])
+                norm_parts.append((pk, pargs))
+                texts.append(self._render_status_text(pk, pargs))
+            self._current_status_data = {"type": "parts", "parts": norm_parts, "color": color}
+            text = " · ".join(texts)
+        elif raw_text:
             text = key
             self._current_status_data = {"type": "raw", "text": text, "color": color}
         else:
-            self._current_status_data = {"type": "static", "key": key, "color": color, "format_args": format_args or [], "prefix_key": prefix_key}
-            text = self.t(key)
-            if format_args: text = text.format(*format_args)
-            if prefix_key: text = self.t(prefix_key) + text
-            
+            # Lưu canonical rule nếu có
+            args = list(format_args or [])
+            if key == "rule_changed" and len(args) >= 2:
+                args[1] = self.rule_to_canonical(args[1])
+            self._current_status_data = {
+                "type": "static",
+                "key": key,
+                "color": color,
+                "format_args": args,
+                "prefix_key": prefix_key,
+            }
+            text = self._render_status_text(key, args, prefix_key)
+
         self.status.configure(text=text, text_color=self._status_text_color(color) if color else ("black", "white"))
 
     def update_turn_status(self, mode_type=None, symbol=None):
@@ -1319,7 +1368,8 @@ class XOUltraAI:
         if limit_secs == 0:
             return
 
-        if self.game_mode_var.get() == "Online" and not self.history:
+        # Chưa có nước nào → chưa đếm (Online + offline giống nhau)
+        if not self.history:
             return
 
         symbol = symbol or self.get_current_symbol()
@@ -1346,7 +1396,9 @@ class XOUltraAI:
         else:
             self._turn_deadline = None
             self._turn_deadline_mono = time.monotonic() + float(self.turn_time_limit)
-            self.turn_time_remaining = {"X": self.turn_time_limit, "O": self.turn_time_limit}
+            # Chỉ người đang đi đếm; bên kia giữ full 35s (giống Online)
+            other = self.opposite_symbol(symbol)
+            self.turn_time_remaining = {symbol: self.turn_time_limit, other: self.turn_time_limit}
 
         self.update_turn_bar()
         if not self.game_over and not self.is_ai_match_paused:
@@ -1533,8 +1585,11 @@ class XOUltraAI:
     def update_timer_display(self):
         limit_secs = self.get_selected_time_limit_seconds()
         if limit_secs == 0:
-            if hasattr(self, "lbl_score_left_time"): self.lbl_score_left_time.configure(text="∞")
-            if hasattr(self, "lbl_score_right_time"): self.lbl_score_right_time.configure(text="∞")
+            big_font = ctk.CTkFont(family="Segoe UI", size=36, weight="bold")
+            if hasattr(self, "lbl_score_left_time"): self.lbl_score_left_time.configure(text="∞", font=big_font)
+            if hasattr(self, "lbl_score_right_time"): self.lbl_score_right_time.configure(text="∞", font=big_font)
+            
+
             # Ẩn hoặc làm trống thanh tiến trình thời gian khi không giới hạn thời gian
             if hasattr(self, "turn_bar_left") and self.turn_bar_left.winfo_exists():
                 self.turn_bar_left.pack_forget()
@@ -1543,7 +1598,7 @@ class XOUltraAI:
         else:
             mx, sx = divmod(max(0, self.time_remaining.get("X", 0)), 60)
             mo, so = divmod(max(0, self.time_remaining.get("O", 0)), 60)
-            x_text, o_text = f"⏱ {mx:02d}:{sx:02d}", f"⏱ {mo:02d}:{so:02d}"
+            x_text, o_text = f"{mx:02d}:{sx:02d}", f"{mo:02d}:{so:02d}"
             mode = self.game_mode_var.get()
             if hasattr(self, "lbl_score_left_time"):
                 if mode == "Online":
@@ -1573,6 +1628,15 @@ class XOUltraAI:
         if not name or name in ("Đối thủ", "Opponent"):
             return self.t("default_opp")
         return name
+
+    def online_name_for_symbol(self, symbol):
+        """Tên người chơi Online theo quân X/O (mình hoặc đối thủ)."""
+        if symbol == getattr(self, "online_symbol", None):
+            return self.player_name_var.get().strip() or self.t("your_name")
+        return self.display_opponent_name()
+
+    def my_display_name(self):
+        return self.player_name_var.get().strip() or self.t("your_name")
 
     def update_score_display(self):
         if not hasattr(self, 'lbl_score_left'): return
@@ -1630,7 +1694,15 @@ class XOUltraAI:
         winner_sym = self.opposite_symbol(loser_sym)
         
         self.add_score(winner_sym)
-        self.display_status("timeout_msg", color=self.status_color_for_symbol(winner_sym), format_args=[winner_sym])
+        if self.game_mode_var.get() == "Online":
+            w_name = self.online_name_for_symbol(winner_sym)
+            self.display_status(
+                "online_timeout_win",
+                color=self.status_color_for_symbol(winner_sym),
+                format_args=[w_name, winner_sym],
+            )
+        else:
+            self.display_status("timeout_msg", color=self.status_color_for_symbol(winner_sym), format_args=[winner_sym])
         self.game_over = True
         # Hủy trạng thái yêu cầu đầu hàng nếu đang pending
         self._i_resigned = False
@@ -2055,7 +2127,7 @@ class XOUltraAI:
         # Nút Đầu hàng / Chấp nhận — chỉ hiện ở tab Online (pack trong refresh_mode_visibility)
         self.btn_resign = ctk.CTkButton(
             self.row4, text=self.t("resign_btn"), command=self.on_resign_or_accept,
-            font=bold_font, fg_color="#7f1d1d", hover_color="#991b1b",
+            font=bold_font, fg_color="#6366f1", hover_color="#4f46e5",
             width=130, height=35, corner_radius=10, state="disabled"
         )
         # Đồng hồ đếm ngược hết hạn yêu cầu đầu hàng (đỏ, sau nút ĐẦU HÀNG)
@@ -2102,23 +2174,23 @@ class XOUltraAI:
 
         self.score_left_card = ctk.CTkFrame(
             self.score_bg, fg_color=card_fg, border_width=1,
-            border_color=card_border, corner_radius=14, height=76
+            border_color=card_border, corner_radius=14, height=92
         )
-        self.score_left_card.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.score_left_card.grid_propagate(False)
+        self.score_left_card.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=4)
+        self.score_left_card.pack_propagate(False)
 
         self.score_right_card = ctk.CTkFrame(
             self.score_bg, fg_color=card_fg, border_width=1,
-            border_color=card_border, corner_radius=14, height=76
+            border_color=card_border, corner_radius=14, height=92
         )
-        self.score_right_card.grid(row=0, column=2, sticky="ew", padx=(4, 0))
-        self.score_right_card.grid_propagate(False)
+        self.score_right_card.grid(row=0, column=2, sticky="ew", padx=(4, 0), pady=4)
+        self.score_right_card.pack_propagate(False)
 
-        name_font = ctk.CTkFont(family="Segoe UI", size=23, weight="bold")
-        time_font = ctk.CTkFont(family="Segoe UI", size=23, weight="bold")  # Đổi từ 18 thành 23
-        score_font = ctk.CTkFont(family="Segoe UI", size=36, weight="bold")  
+        name_font = ctk.CTkFont(family="Segoe UI", size=26, weight="bold")
+        time_font = ctk.CTkFont(family="Segoe UI", size=36, weight="bold")
+        score_font = ctk.CTkFont(family="Segoe UI", size=45, weight="bold")  
         symbol_font = ctk.CTkFont(family="Segoe UI", size=22, weight="bold")
-        bar_font = ctk.CTkFont(family="Segoe UI", size=15, weight="bold") # Tăng lên 15 cho to rõ
+        bar_font = ctk.CTkFont(family="Segoe UI", size=18, weight="bold") 
 
         self.score_left_top = ctk.CTkFrame(self.score_left_card, fg_color="transparent", height=42)
         self.score_left_top.pack(fill="x", padx=12, pady=(6, 0))
@@ -2155,7 +2227,7 @@ class XOUltraAI:
 
         # Đồng hồ thời gian được neo cố định vào cột 3, không bị xê dịch bởi tên dài/ngắn
         self.lbl_score_left_time = ctk.CTkLabel(
-            self.score_left_top, text="⏱ 01:00", font=time_font, anchor="center",
+            self.score_left_top, text="01:00", font=time_font, anchor="center",
             text_color=("#334155", "#e2e8f0")
         )
         self.lbl_score_left_time.grid(row=0, column=3, sticky="ew")
@@ -2171,7 +2243,6 @@ class XOUltraAI:
             self.score_right_top, text="O", width=38, height=38,
             corner_radius=8, fg_color="#e74c3c", text_color="white", font=symbol_font
         )
-        # Đã sửa lỗi sai tên biến ở dòng này
         self.lbl_score_right_symbol.grid(row=0, column=4, sticky="e")
 
         self.lbl_score_right = ctk.CTkLabel(
@@ -2182,7 +2253,7 @@ class XOUltraAI:
 
         # Đồng hồ thời gian được neo cố định vào cột 1 bên phải
         self.lbl_score_right_time = ctk.CTkLabel(
-            self.score_right_top, text="⏱ 01:00", font=time_font, anchor="center",
+            self.score_right_top, text="01:00", font=time_font, anchor="center",
             text_color=("#334155", "#e2e8f0")
         )
         self.lbl_score_right_time.grid(row=0, column=1, sticky="ew")
@@ -2197,7 +2268,7 @@ class XOUltraAI:
         
         # KHUNG CHỨA BÊN TRÁI
         self.score_left_timer_row = ctk.CTkFrame(self.score_left_card, fg_color="transparent", height=24)
-        self.score_left_timer_row.pack(fill="x", padx=10, pady=(0, 2))
+        self.score_left_timer_row.pack(fill="x", padx=10, pady=(0, 8))
         self.score_left_timer_row.pack_propagate(False)
         
         self.lbl_turn_left = ctk.CTkLabel(self.score_left_timer_row, text="35s", width=36, font=bar_font)
@@ -2214,7 +2285,7 @@ class XOUltraAI:
 
         # KHUNG CHỨA BÊN PHẢI
         self.score_right_timer_row = ctk.CTkFrame(self.score_right_card, fg_color="transparent", height=24)
-        self.score_right_timer_row.pack(fill="x", padx=10, pady=(0, 2))
+        self.score_right_timer_row.pack(fill="x", padx=10, pady=(0, 8))
         self.score_right_timer_row.pack_propagate(False)
         
         # BÊN PHẢI: dùng cùng CTkProgressBar/DrawEngine với bên trái,
@@ -2283,30 +2354,51 @@ class XOUltraAI:
                 and self.game_over
                 and not self.my_ready_for_rematch
             )
+            # Sau nước đầu tiên: nút VÁN MỚI → ĐẦU HÀNG (hoặc "Có" khi đang xác nhận)
+            # _surrender_pending: đã bấm Có, chờ server — không hiện lại ĐẦU HÀNG
+            surrender_pending = bool(getattr(self, "_surrender_pending", False))
+            can_surrender = bool(
+                self.is_online_connected
+                and not self.game_over
+                and len(self.history) > 0
+                and not can_accept
+                and not getattr(self, "_i_resigned", False)
+                and not surrender_pending
+            )
+            surrender_confirming = bool(getattr(self, "_surrender_confirming", False) and can_surrender)
             new_btn_new_sig = (
                 "online",
                 can_new,
                 can_accept,
+                can_surrender,
+                surrender_confirming,
+                surrender_pending,
                 is_dark,
                 bool(self.game_over),
                 bool(self.my_ready_for_rematch),
                 pending_offer,
                 pending_resign_done,
                 bool(self.is_online_connected),
+                len(self.history),
             )
         else:
             can_accept = False
             can_new = (len(self.history) > 0) or self.game_over
+            can_surrender = False
+            surrender_confirming = False
+            surrender_pending = False
             new_btn_new_sig = ("offline", can_new, is_dark)
 
         force_apply = mode == "Online" and (
             getattr(self, "_opp_resigned", False)
             or getattr(self, "_i_resigned", False)
+            or getattr(self, "_surrender_confirming", False)
+            or getattr(self, "_surrender_pending", False)
         )
         if force_apply or getattr(self, '_last_btn_new_sig', None) != new_btn_new_sig:
             if hasattr(self, 'btn_new') and self.btn_new.winfo_exists():
                 if can_accept:
-                    # Người nhận yêu cầu đầu hàng → CHẤP NHẬN trên nút VÁN MỚI
+                    # Người nhận yêu cầu cầu hòa → CHẤP NHẬN trên nút VÁN MỚI
                     self.btn_new.configure(
                         text=self.t("accept_btn"),
                         state="normal",
@@ -2314,6 +2406,34 @@ class XOUltraAI:
                         hover_color="#15803d",
                         text_color="white",
                     )
+                elif surrender_pending and not self.game_over:
+                    # Đã bấm Có — hiện VÁN MỚI ngay (disabled đến khi server chốt ván)
+                    self.btn_new.configure(
+                        text=self.t("new_game"),
+                        state="disabled",
+                        fg_color=disabled_bg,
+                        hover_color=disabled_bg,
+                        text_color=disabled_fg,
+                    )
+                elif can_surrender:
+                    if surrender_confirming:
+                        # Đang xác nhận đầu hàng → nút "Có"
+                        self.btn_new.configure(
+                            text=self.t("surrender_confirm_btn"),
+                            state="normal",
+                            fg_color="#f43f5e",
+                            hover_color="#e11d48",
+                            text_color="white",
+                        )
+                    else:
+                        # Đã có nước → ĐẦU HÀNG
+                        self.btn_new.configure(
+                            text=self.t("surrender_btn"),
+                            state="normal",
+                            fg_color="#e11d48",
+                            hover_color="#be123c",
+                            text_color="white",
+                        )
                 elif not can_new:
                     self.btn_new.configure(
                         text=self.t("new_game"),
@@ -2683,6 +2803,9 @@ class XOUltraAI:
     def new_game(self):
         # Invalidate any worker that may still be using the previous engine/game.
         self._ai_generation += 1
+        if hasattr(self, "_cancel_surrender_confirm"):
+            self._cancel_surrender_confirm(restore_status=False)
+        self._surrender_pending = False
         self.stop_thinking_animation()
         if self.turn_timer_job:
             self.root.after_cancel(self.turn_timer_job); self.turn_timer_job = None
@@ -3050,7 +3173,9 @@ class XOUltraAI:
                 return
             if self.game_over:
                 data = getattr(self, "_current_status_data", {}) or {}
-                if data.get("type") == "static" and data.get("key"):
+                if data.get("type") == "parts" and data.get("parts"):
+                    self.display_status(None, color=data.get("color"), parts=data["parts"])
+                elif data.get("type") == "static" and data.get("key"):
                     self.display_status(
                         data["key"],
                         color=data.get("color"),
@@ -3060,15 +3185,32 @@ class XOUltraAI:
                 elif data.get("type") == "turn":
                     self.update_turn_status(mode_type=data.get("mode_type"), symbol=data.get("symbol"))
                 else:
-                    # Thắng/thua online thường lưu raw — cố gắng map lại nếu có winner trong data
                     self.update_turn_status(mode_type="online")
                 return
             if self.is_online_connected and not getattr(self, "_is_waiting_online", False):
+                data = getattr(self, "_current_status_data", {}) or {}
+                # Giữ thông báo đổi cài đặt / thắng-thua nếu đang hiện (chỉ dịch lại)
+                if data.get("type") == "parts" and data.get("parts"):
+                    self.display_status(None, color=data.get("color"), parts=data["parts"])
+                    return
+                if data.get("type") == "static" and data.get("key") and data.get("key") not in (
+                    "online_turn", "turn_your", "turn_2p", "turn_ai_vs_ai", "init_status", ""
+                ):
+                    # Thông báo tĩnh (đổi luật, thắng, hòa, đầu hàng…) → dịch lại, không ghi đè bằng lượt
+                    self.display_status(
+                        data["key"],
+                        color=data.get("color"),
+                        format_args=data.get("format_args"),
+                        prefix_key=data.get("prefix_key"),
+                    )
+                    return
                 self.update_turn_status(mode_type="online")
                 return
             if not self.is_online_connected:
                 data = getattr(self, "_current_status_data", {}) or {}
-                if data.get("type") == "static" and data.get("key"):
+                if data.get("type") == "parts" and data.get("parts"):
+                    self.display_status(None, color=data.get("color"), parts=data["parts"])
+                elif data.get("type") == "static" and data.get("key"):
                     self.display_status(
                         data["key"],
                         color=data.get("color"),
@@ -3081,6 +3223,9 @@ class XOUltraAI:
         data = getattr(self, "_current_status_data", {}) or {}
         if data.get("type") == "turn":
             self.update_turn_status(mode_type=data.get("mode_type"), symbol=data.get("symbol"))
+            return
+        if data.get("type") == "parts" and data.get("parts"):
+            self.display_status(None, color=data.get("color"), parts=data["parts"])
             return
         if data.get("type") == "static" and data.get("key"):
             self.display_status(
@@ -3147,7 +3292,8 @@ class XOUltraAI:
             spans = max(1, self.board_size - 1)
         else:
             spans = max(1, self.board_size)
-            
+        temp_cell_size = max(24, min(available_w, available_h) - 44) // spans
+        self.board_margin = max(22, int(temp_cell_size * 0.6))
         self.cell_size = max(24, min(available_w, available_h) - 2 * self.board_margin) // spans
         self.board_pixels = 2 * self.board_margin + spans * self.cell_size
 
@@ -3214,12 +3360,30 @@ class XOUltraAI:
             if cell := self._cell_from_canvas(event): self.click(*cell)
 
     def draw_classic_board(self):
+        """Kiểu Cổ điển — bố cục giấy kẻ ô, màu lưới/ô như bản cũ."""
         cv = self.modern_canvas
         cv.delete("all")
-        bg_color, grid_color, last_move_bg, hover_color = ("#0b141d", "#243447", "#1e3a5f", "#526574") if self.is_dark_mode else ("#f0f0f0", "#b0b0b0", "#fae19c", "#cccccc")
+        if self.is_dark_mode:
+            bg_color, grid_color, last_move_bg, hover_color = "#0b141d", "#243447", "#1e3a5f", "#526574"
+            border_color = "#334155"
+            win_outline = "#ffb300"
+            paper_pad_fill = "#0b141d"
+        else:
+            # Bố cục giấy + màu cũ (xám)
+            bg_color, grid_color, last_move_bg, hover_color = "#f0f0f0", "#b0b0b0", "#fae19c", "#cccccc"
+            border_color = "#b0b0b0"
+            win_outline = "#e67e22"
+            paper_pad_fill = "#f0f0f0"
         m, s = self.board_margin, self.cell_size
         end = m + self.board_size * s
-        cv.configure(bg=bg_color)
+        cv.configure(bg=paper_pad_fill)
+
+        # Nền “tờ giấy” + viền mềm
+        pad = max(2, m // 4)
+        cv.create_rectangle(
+            m - pad, m - pad, end + pad, end + pad,
+            fill=bg_color, outline=border_color, width=2,
+        )
 
         if self.last_move:
             r, c = self.last_move
@@ -3229,16 +3393,16 @@ class XOUltraAI:
             p = m + i * s
             cv.create_line(p, m, p, end, fill=grid_color, width=1)
             cv.create_line(m, p, end, p, fill=grid_color, width=1)
-            
-        for wr, wc in self.winning_cells: 
-            cv.create_rectangle(m + wc * s, m + wr * s, m + (wc + 1) * s, m + (wr + 1) * s, outline="#ffb300" if self.is_dark_mode else "#e67e22", width=2)
-        if self.hint_cell: 
+
+        for wr, wc in self.winning_cells:
+            cv.create_rectangle(m + wc * s, m + wr * s, m + (wc + 1) * s, m + (wr + 1) * s, outline=win_outline, width=2)
+        if self.hint_cell:
             hr, hc = self.hint_cell
             cv.create_rectangle(m + hc * s, m + hr * s, m + (hc + 1) * s, m + (hr + 1) * s, outline="#f39c12", width=3, dash=(4, 2))
 
         if self.hover_cell and self.game_mode_var.get() != "AI vs AI" and (self.game_mode_var.get() != "Online" or self.is_online_turn):
             hr, hc = self.hover_cell
-            if 0 <= hr < self.board_size and 0 <= hc < self.board_size and self.board[hr][hc] == EMPTY: 
+            if 0 <= hr < self.board_size and 0 <= hc < self.board_size and self.board[hr][hc] == EMPTY:
                 cv.create_rectangle(m + hc * s + 1, m + hr * s + 1, m + (hc + 1) * s - 1, m + (hr + 1) * s - 1, outline=hover_color, width=2)
 
         font = ("Segoe UI", max(15, int(s * 0.58)), "bold")
@@ -3305,7 +3469,7 @@ class XOUltraAI:
                     cv.create_oval(x - radius, y - radius, x + radius, y + radius, fill=piece_color, outline="")
                 
                 if self.last_move == (r, c): 
-                    cv.create_oval(x - max(2, int(s * 0.15)), y - max(2, int(s * 0.15)), x + max(2, int(s * 0.15)), y + max(2, int(s * 0.15)), fill=bg_color, outline="")
+                    cv.create_oval(x - max(2, int(s * 0.12)), y - max(2, int(s * 0.12)), x + max(2, int(s * 0.12)), y + max(2, int(s * 0.12)), fill=bg_color, outline="")
 
         for wr, wc in self.winning_cells: 
             wx, wy = m + wc * s, m + wr * s
@@ -3580,8 +3744,8 @@ class XOUltraAI:
             self.btn_resign.configure(
                 text=self.t("reject_btn"),
                 state="normal",
-                fg_color="#7f1d1d",
-                hover_color="#991b1b",
+                fg_color="#f59e0b",
+                hover_color="#d97706",
                 text_color="white",
             )
         elif self._i_resigned and not self.game_over:
@@ -3604,8 +3768,8 @@ class XOUltraAI:
             self.btn_resign.configure(
                 text=self.t("resign_btn"),
                 state="normal",
-                fg_color="#7f1d1d",
-                hover_color="#991b1b",
+                fg_color="#6366f1",
+                hover_color="#4f46e5",
                 text_color="white",
             )
         else:
@@ -3617,6 +3781,84 @@ class XOUltraAI:
                 text_color=disabled_fg,
             )
 
+
+    def _cancel_surrender_confirm(self, restore_status=True):
+        """Hủy chế độ xác nhận đầu hàng 10s trên nút VÁN MỚI."""
+        job = getattr(self, "_surrender_confirm_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._surrender_confirm_job = None
+        self._surrender_confirm_deadline = None
+        was = bool(getattr(self, "_surrender_confirming", False))
+        self._surrender_confirming = False
+        if was and restore_status and not self.game_over and self.game_mode_var.get() == "Online":
+            if self.is_online_turn:
+                self.update_turn_status()
+            else:
+                self.update_turn_status()
+        self.update_pause_btn_state()
+
+    def _tick_surrender_confirm(self):
+        """Đếm ngược 10s xác nhận đầu hàng. Hết giờ → hủy."""
+        if not getattr(self, "_surrender_confirming", False):
+            return
+        if self.game_over or self.game_mode_var.get() != "Online":
+            self._cancel_surrender_confirm(restore_status=False)
+            return
+        deadline = getattr(self, "_surrender_confirm_deadline", None)
+        if deadline is None:
+            self._cancel_surrender_confirm()
+            return
+        left = max(0, int(deadline - time.time() + 0.999))
+        if left <= 0:
+            self._cancel_surrender_confirm(restore_status=True)
+            return
+        self.display_status("surrender_confirm_msg", color="#f39c12", format_args=[left])
+        self._surrender_confirm_job = self.root.after(200, self._tick_surrender_confirm)
+
+    def _start_surrender_confirm(self):
+        """Bắt đầu xác nhận đầu hàng: nút → Có, thông báo + đếm 10s."""
+        if self.game_over or self.game_mode_var.get() != "Online":
+            return
+        if not self.is_online_connected or not self.history:
+            return
+        job = getattr(self, "_surrender_confirm_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._surrender_confirming = True
+        self._surrender_confirm_deadline = time.time() + 10.0
+        self.display_status("surrender_confirm_msg", color="#f39c12", format_args=[10])
+        self.update_pause_btn_state()
+        self._surrender_confirm_job = self.root.after(200, self._tick_surrender_confirm)
+
+    def _confirm_surrender(self):
+        """Gửi đầu hàng thật lên server (thua cuộc)."""
+        if self.game_over or self.game_mode_var.get() != "Online":
+            return
+        ws = self.ws
+        if ws is None or not self.is_online_connected:
+            self.display_status("ws_not_connected", color="#ef4444")
+            self._cancel_surrender_confirm(restore_status=False)
+            return
+        try:
+            ws.send(json.dumps({"type": "surrender"}))
+        except Exception:
+            self.display_status("online_disconnected", color="#ef4444")
+            self._cancel_surrender_confirm(restore_status=False)
+            self._surrender_pending = False
+            self.update_pause_btn_state()
+            return
+        # Hủy xác nhận + khóa nút ĐẦU HÀNG ngay — hiện VÁN MỚI (disabled) không đợi server
+        self._surrender_pending = True
+        self._cancel_surrender_confirm(restore_status=False)
+        self._last_btn_new_sig = None
+        self.update_pause_btn_state()
 
     def on_resign_or_accept(self):
         """Online: Cầu hòa khi đang chơi, hoặc Từ chối khi đối thủ gửi yêu cầu."""
@@ -3659,6 +3901,19 @@ class XOUltraAI:
             if not self.is_online_connected:
                 # Chỉ truyền từ khóa "online_enter_room" và bỏ raw_text=True
                 self.display_status("online_enter_room", color="#f39c12")
+                return
+
+            # Đầu hàng: sau nước đầu tiên, nút VÁN MỚI = ĐẦU HÀNG / Có (xác nhận 10s)
+            if (
+                not self.game_over
+                and len(self.history) > 0
+                and not getattr(self, "_opp_resigned", False)
+                and not getattr(self, "_i_resigned", False)
+            ):
+                if getattr(self, "_surrender_confirming", False):
+                    self._confirm_surrender()
+                else:
+                    self._start_surrender_confirm()
                 return
 
             # Chấp nhận yêu cầu cầu hòa của đối thủ (nút VÁN MỚI = CHẤP NHẬN)
@@ -3744,32 +3999,21 @@ class XOUltraAI:
         self.set_time_controls_enabled(True)
 
     def get_winning_line(self, r, c, piece):
-        rule = self.rule_var.get().lower()
-        for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
-            cells, blocked_pos, blocked_neg = [(r, c)], False, False
-            nr, nc = r + dr, c + dc
-            while 0 <= nr < self.board_size and 0 <= nc < self.board_size:
-                if self.board[nr][nc] == piece: cells.append((nr, nc)); nr += dr; nc += dc
-                else: blocked_pos = (self.board[nr][nc] != EMPTY); break
-            else: blocked_pos = True
-
-            nr, nc = r - dr, c - dc
-            while 0 <= nr < self.board_size and 0 <= nc < self.board_size:
-                if self.board[nr][nc] == piece: cells.insert(0, (nr, nc)); nr -= dr; nc -= dc
-                else: blocked_neg = (self.board[nr][nc] != EMPTY); break
-            else: blocked_neg = True
-
-            if len(cells) >= 5:
-                if "standard" in rule or "tiêu chuẩn" in rule: return cells
-                if ("chặn 2 đầu" in rule or "block" in rule) and (blocked_pos and blocked_neg): continue
-                return cells
-        return []
+        """Đường thắng 5 quân theo luật đang chọn (canonical, không phụ thuộc VI/EN)."""
+        standard_rule = self.is_standard_rule
+        return self._get_winning_line_on_snapshot(
+            self.board, r, c, piece, self.board_size, standard_rule
+        )
 
     def is_board_full(self):
         """True khi không còn ô trống trên bàn."""
         return all(cell != EMPTY for row in self.board for cell in row)
 
     def _get_winning_line_on_snapshot(self, board, r, c, piece, board_size, standard_rule):
+        """Trả về list ô thắng nếu (r,c) hoàn thành 5+ theo luật; ngược lại []."""
+        # Chuẩn hóa cờ luật: nhận bool hoặc chuỗi
+        if not isinstance(standard_rule, bool):
+            standard_rule = self.rule_to_canonical(str(standard_rule or "")) == "standard"
         for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
             cells = [(r, c)]
             blocked_pos = blocked_neg = False
@@ -3781,7 +4025,7 @@ class XOUltraAI:
                     blocked_pos = board[nr][nc] != EMPTY
                     break
             else:
-                blocked_pos = True
+                blocked_pos = True  # mép bàn = bị chặn
 
             nr, nc = r - dr, c - dc
             while 0 <= nr < board_size and 0 <= nc < board_size:
@@ -3796,25 +4040,54 @@ class XOUltraAI:
             if len(cells) >= 5:
                 if standard_rule:
                     return cells
-                # Luật Chặn 2 đầu: bị chặn cả hai đầu thì không thắng
+                # Luật Chặn 2 đầu: chỉ không thắng khi bị chặn CẢ hai đầu
                 if blocked_pos and blocked_neg:
                     continue
                 return cells
         return []
 
+    def _collect_winning_cells(self, board, piece, board_size, standard_rule):
+        """Mọi ô trống mà piece đánh vào là thắng ngay."""
+        wins = []
+        for r in range(board_size):
+            for c in range(board_size):
+                if board[r][c] != EMPTY:
+                    continue
+                candidate = [row[:] for row in board]
+                candidate[r][c] = piece
+                if self._get_winning_line_on_snapshot(candidate, r, c, piece, board_size, standard_rule):
+                    wins.append((r, c))
+        return wins
+
     def find_urgent_move(self, side, board=None, board_size=None, standard_rule=None):
+        """Nước bắt buộc (CHỈ luật Tiêu chuẩn): thắng ngay hoặc chặn đối thủ thắng ngay.
+
+        Luật Chặn 2 đầu: KHÔNG dùng chặn gấp phía client — để engine (Caro) tự quyết.
+        Chặn gấp client từng chọn sai ô (chặn chỗ không nguy hiểm) trong khi engine
+        vốn chơi tốt luật này.
+        """
         board = self.board if board is None else board
         board_size = self.board_size if board_size is None else board_size
         if standard_rule is None:
-            standard_rule = "standard" in self.rule_var.get().lower() or "tiêu chuẩn" in self.rule_var.get().lower()
-        for side_check in (side, HUMAN if side == AI else AI):
-            for r in range(board_size):
-                for c in range(board_size):
-                    if board[r][c] == EMPTY:
-                        candidate = [row[:] for row in board]
-                        candidate[r][c] = side_check
-                        if self._get_winning_line_on_snapshot(candidate, r, c, side_check, board_size, standard_rule):
-                            return (r, c)
+            standard_rule = self.is_standard_rule
+        elif not isinstance(standard_rule, bool):
+            standard_rule = self.rule_to_canonical(str(standard_rule)) == "standard"
+
+        # Chặn 2 đầu → bỏ qua urgent, tin engine
+        if not standard_rule:
+            return None
+
+        # 1) Thắng ngay
+        own_wins = self._collect_winning_cells(board, side, board_size, standard_rule)
+        if own_wins:
+            return own_wins[0]
+
+        # 2) Chặn đối thủ thắng ngay
+        opp = HUMAN if side == AI else AI
+        opp_wins = self._collect_winning_cells(board, opp, board_size, standard_rule)
+        if opp_wins:
+            return opp_wins[0]
+
         return None
 
     def warmup_online_server(self):
@@ -4020,7 +4293,7 @@ class XOUltraAI:
         # ===============================================
 
         self._is_waiting_online = True
-        self.start_thinking_animation(self.t("online_connecting"), raw_text=True)
+        self.start_thinking_animation("online_connecting", raw_text=False)
         self.modern_canvas.configure(cursor="watch")
 
         generation = self._ws_generation
@@ -4263,13 +4536,15 @@ class XOUltraAI:
                 opp_name = (changed_by or "").strip() or self.display_opponent_name()
                 if minutes > 0:
                     self.display_status(
-                        f"{opp_name} đã thay đổi thời gian thành {minutes} phút",
-                        color="#notice", raw_text=True
+                        "opponent_time_changed",
+                        color="#notice",
+                        format_args=[opp_name, minutes],
                     )
                 else:
                     self.display_status(
-                        f"{opp_name} đã thay đổi thời gian thành không giới hạn",
-                        color="#notice", raw_text=True
+                        "opponent_time_unlimited",
+                        color="#notice",
+                        format_args=[opp_name],
                     )
             self._ws_after(generation, apply_remote_time)
 
@@ -4311,13 +4586,15 @@ class XOUltraAI:
                         )
                         if remote_auto is not None and bool(remote_auto):
                             self.display_status(
-                                f"{opp_name} đã thay đổi phe thành Tự động",
-                                color="#notice", raw_text=True
+                                "piece_changed_auto",
+                                color="#notice",
+                                format_args=[opp_name],
                             )
                         else:
                             self.display_status(
-                                f"{opp_name} đã thay đổi phe thành {their_sym}",
-                                color="#notice", raw_text=True
+                                "piece_changed",
+                                color="#notice",
+                                format_args=[opp_name, their_sym],
                             )
                 self._ws_after(generation, apply_symbol_update)
 
@@ -4348,7 +4625,7 @@ class XOUltraAI:
                     elif "board_size" in changed_fields:
                         board_changed = True
                     if should_notify and board_changed:
-                        msgs.append(f"{opp_name} đã thay đổi bàn cờ thành {remote_board}")
+                        msgs.append(("board_changed", [opp_name, remote_board]))
 
                 rule_changed = False
                 if remote_rule:
@@ -4360,7 +4637,8 @@ class XOUltraAI:
                         rule_changed = True
                         self.rule_var.set(display_rule)
                     if should_notify and rule_changed:
-                        msgs.append(self.t("rule_changed").format(opp_name, display_rule))
+                        # Lưu canonical rule — display_status sẽ dịch theo ngôn ngữ
+                        msgs.append(("rule_changed", [opp_name, self.rule_to_canonical(remote_rule)]))
 
                 if remote_time is not None:
                     minutes = int(remote_time // 60) if remote_time > 0 else 0
@@ -4374,9 +4652,9 @@ class XOUltraAI:
                     time_changed = (minutes != prev_minutes) or ("time_limit" in changed_fields)
                     if should_notify and time_changed:
                         if minutes > 0:
-                            msgs.append(f"{opp_name} đã thay đổi thời gian thành {minutes} phút")
+                            msgs.append(("opponent_time_changed", [opp_name, minutes]))
                         else:
-                            msgs.append(f"{opp_name} đã thay đổi thời gian thành không giới hạn")
+                            msgs.append(("opponent_time_unlimited", [opp_name]))
 
                 auto_changed = False
                 if auto_val is not None:
@@ -4402,19 +4680,19 @@ class XOUltraAI:
 
                 if should_notify:
                     if auto_changed and auto_val:
-                        msgs.append(f"{opp_name} đã thay đổi phe thành Tự động")
+                        msgs.append(("piece_changed_auto", [opp_name]))
                     elif changed_symbol or (auto_changed and not auto_val):
                         their_sym = remote_opponent_symbol if remote_opponent_symbol in ("X", "O") else (
                             ("O" if remote_symbol == "X" else "X") if remote_symbol in ("X", "O") else None
                         )
                         if their_sym:
-                            msgs.append(f"{opp_name} đã thay đổi phe thành {their_sym}")
+                            msgs.append(("piece_changed", [opp_name, their_sym]))
 
                 self.update_symbol_auto_button()
                 self.update_ui()
                 if msgs:
-                    # #notice → cam đậm (sáng) / vàng sáng (tối)
-                    self.display_status(" · ".join(msgs), color="#notice", raw_text=True)
+                    # Lưu key+args để đổi VI/EN vẫn dịch đúng
+                    self.display_status(None, color="#notice", parts=msgs)
             self._ws_after(generation, apply_remote_settings)
 
         elif t == "move":
@@ -4451,16 +4729,21 @@ class XOUltraAI:
                     self.winning_cells = win_line
                     self.game_over = True
                     self.add_score(opponent_sym)
-                    self.display_status("online_opp_win", color="#ef4444", format_args=[opponent_sym])
+                    self.display_status(
+                        "online_named_win",
+                        color="#ef4444",
+                        format_args=[self.online_name_for_symbol(opponent_sym), opponent_sym],
+                    )
                     self.play_sound(VICTORY_SOUND_PATH)
                     self.update_symbol_auto_button()
                     self.set_time_controls_enabled(True)
-                    self.update_pause_btn_state()   # ← Bật nút VÁN MỚI
                 else:
                     self.is_online_turn = True
                     self.modern_canvas.configure(cursor="hand2")
                     self.update_turn_status(mode_type="online", symbol=self.online_symbol)
                 self.update_ui()
+                # Sau nước đầu (kể cả của đối thủ): VÁN MỚI → ĐẦU HÀNG
+                self.update_pause_btn_state()
             self._ws_after(generation, apply_opp_move)
             
         elif t == "move_rejected":
@@ -4476,6 +4759,7 @@ class XOUltraAI:
                 self.is_online_turn = (self._server_turn_symbol == self.online_symbol)
                 self.modern_canvas.configure(cursor="hand2" if self.is_online_turn else "watch")
                 self.update_ui()
+                self.update_pause_btn_state()
                 if reason == "occupied":
                     self.display_status("cell_occupied", color="#f39c12")
             self._ws_after(generation, apply_move_rejected)
@@ -4490,6 +4774,8 @@ class XOUltraAI:
             def apply_game_result():
                 if self.game_over and result not in ("resign", "draw"):
                     return
+                self._cancel_surrender_confirm(restore_status=False)
+                self._surrender_pending = False
                 self.game_over = True
                 if line and isinstance(line, list):
                     self.winning_cells = [tuple(x) for x in line if isinstance(x, (list, tuple)) and len(x) == 2]
@@ -4520,8 +4806,9 @@ class XOUltraAI:
                         self._opp_resigned = False
                         self._resign_name = ""
                         self._my_resign_count = 0
+                        self._surrender_pending = False
                         self._stop_resign_countdown()
-                        self.display_status("draw_msg", color="#f39c12")
+                        self.display_status("draw_agreed_msg", color="#f39c12")
                     elif resigned_symbol == self.online_symbol or self._i_resigned:
                         self._i_resigned = True
                         self._opp_resigned = False
@@ -4536,10 +4823,28 @@ class XOUltraAI:
                     self._i_resigned = False
                     self._opp_resigned = False
                     self.add_score(winner)
-                    if winner == self.online_symbol:
-                        self.display_status("online_you_win", color="#2ecc71", format_args=[winner])
+                    winner_name = self.online_name_for_symbol(winner)
+                    color = "#2ecc71" if winner == self.online_symbol else "#ef4444"
+                    surrendered_symbol = data.get("surrendered_symbol")
+                    surrendered_by = (data.get("surrendered_by") or "").strip()
+                    if surrendered_symbol in ("X", "O"):
+                        # Đầu hàng: "{tên} đã đầu hàng. {tên thắng} (X/O) thắng"
+                        if surrendered_symbol == self.online_symbol:
+                            surr_name = self.my_display_name()
+                        else:
+                            surr_name = surrendered_by or self.display_opponent_name()
+                        self.display_status(
+                            "online_surrender_win",
+                            color=color,
+                            format_args=[surr_name, winner_name, winner],
+                        )
                     else:
-                        self.display_status("online_opp_win", color="#ef4444", format_args=[winner])
+                        # Thắng thường: "{tên} (X/O) THẮNG!"
+                        self.display_status(
+                            "online_named_win",
+                            color=color,
+                            format_args=[winner_name, winner],
+                        )
                     self.play_sound(VICTORY_SOUND_PATH)
                 elif result == "draw":
                     # Hòa (bàn đầy hoặc chấp nhận cầu hòa)
@@ -4547,6 +4852,7 @@ class XOUltraAI:
                     self._opp_resigned = False
                     self._resign_name = ""
                     self._my_resign_count = 0
+                    self._surrender_pending = False
                     self._stop_resign_countdown()
                     job = getattr(self, "_resign_offer_job", None)
                     if job:
@@ -4555,8 +4861,13 @@ class XOUltraAI:
                         except Exception:
                             pass
                         self._resign_offer_job = None
-                    self.display_status("draw_msg", color="#f39c12")
+                    # Cầu hòa được chấp nhận → thông báo rõ; bàn đầy → HÒA CỜ
+                    if data.get("draw_agreed") or data.get("resigned_by") or data.get("resigned_symbol"):
+                        self.display_status("draw_agreed_msg", color="#f39c12")
+                    else:
+                        self.display_status("draw_msg", color="#f39c12")
                     # Không cộng điểm, không victory sound
+                    # Nút VÁN MỚI sáng (giống sau đầu hàng) nhờ game_over=True
                 self.modern_canvas.configure(cursor="hand2")
                 self.update_symbol_auto_button()
                 self.set_time_controls_enabled(True)
@@ -4576,6 +4887,8 @@ class XOUltraAI:
             loser_sym = data.get("loser")
             times = data.get("times")
             def apply_timeout():
+                self._cancel_surrender_confirm(restore_status=False)
+                self._surrender_pending = False
                 if times and isinstance(times, dict):
                     self._match_base_times = {
                         "X": int(times.get("X", 0)),
@@ -4596,6 +4909,7 @@ class XOUltraAI:
             def apply_resign_offer():
                 if self.game_over:
                     return
+                self._cancel_surrender_confirm(restore_status=False)
                 # Hủy countdown cũ nếu có
                 job = getattr(self, "_resign_offer_job", None)
                 if job:
@@ -4723,6 +5037,8 @@ class XOUltraAI:
             server_auto = data.get("auto_rotate")
 
             def apply_rematch():
+                self._cancel_surrender_confirm(restore_status=False)
+                self._surrender_pending = False
                 if server_sym in ("X", "O"):
                     self.set_online_symbol(server_sym, server_auto, refresh=False)
                 elif server_auto is not None:
@@ -4756,6 +5072,8 @@ class XOUltraAI:
         elif t == "disconnect":
             def apply_dc():
                 # Đối thủ thoát — mình vẫn giữ kết nối trong phòng để họ vào lại được ngay.
+                self._cancel_surrender_confirm(restore_status=False)
+                self._surrender_pending = False
                 self._on_opponent_left()
                 msg_key = data.get("msg_key")
                 if msg_key:
@@ -4835,6 +5153,8 @@ class XOUltraAI:
             self.modern_canvas.configure(cursor="watch")
             self.update_turn_status(mode_type="online", symbol=self.online_symbol)
             self.update_ui()
+            # Sau nước đầu: VÁN MỚI → ĐẦU HÀNG
+            self.update_pause_btn_state()
             return
             
         self.hint_cell = None 
@@ -4851,9 +5171,6 @@ class XOUltraAI:
         self.update_symbol_auto_button()
         
         self.play_sound(TING_SOUND_PATH); self.update_ui(); self.update_pause_btn_state()
-        # Bắt đầu đếm sau nước đi (không đếm khi chưa đánh)
-        if self.get_selected_time_limit_seconds() > 0 and not self.timer_job:
-            self.run_match_timer()
 
         win_line = self.get_winning_line(r, c, self.current_turn)
         if win_line:
@@ -4883,8 +5200,12 @@ class XOUltraAI:
             self.modern_canvas.configure(cursor="hand2")
             return
 
+        # Đổi lượt TRƯỚC khi bật đồng hồ — giống Online:
+        # nước đầu không trừ giờ người vừa đánh; chỉ đếm người đi tiếp theo.
         self.current_turn = AI if self.current_turn == HUMAN else HUMAN
         self.start_turn_timer()
+        if self.get_selected_time_limit_seconds() > 0 and not self.timer_job:
+            self.run_match_timer()
         if self.game_mode_var.get() == "2 Người": self.update_turn_status(mode_type="2p"); return
 
         self.is_ai_thinking = True; self.hover_cell = None; self.modern_canvas.configure(cursor="watch"); self.start_thinking_animation("ai_thinking")
@@ -5083,11 +5404,42 @@ class XOUltraAI:
         self.engine = engine
         self.engine_synced = True
 
+    def _force_urgent_ai_square(self, r, c, ai_side):
+        """Lớp an toàn cuối (CHỈ luật Tiêu chuẩn).
+
+        Luật Chặn 2 đầu: không ép chặn — trả về đúng nước engine.
+        """
+        try:
+            standard_rule = self.is_standard_rule
+            if not standard_rule:
+                return r, c
+            own_wins = self._collect_winning_cells(self.board, ai_side, self.board_size, standard_rule)
+            if (r, c) in own_wins:
+                return r, c  # đang thắng ngay — giữ
+            opp = HUMAN if ai_side == AI else AI
+            opp_wins = self._collect_winning_cells(self.board, opp, self.board_size, standard_rule)
+            if not opp_wins:
+                return r, c  # không có nước thắng cấp kỳ của đối thủ
+            if (r, c) in opp_wins:
+                return r, c  # engine đã chặn đúng một trong các ô nguy hiểm
+            # Engine bỏ qua nước chặn bắt buộc → ép về ô cần chặn
+            br, bc = opp_wins[0]
+            print(
+                f"[AI FORCE BLOCK] engine chọn ({r},{c}) nhưng đối thủ thắng tại {opp_wins} "
+                f"→ chặn ({br},{bc})"
+            )
+            return br, bc
+        except Exception as e:
+            print(f"[AI FORCE BLOCK] lỗi: {e}")
+            return r, c
+
     def _commit_ai_move(self, r, c, ai_side, opp_side=None, generation=None):
         if generation is not None and generation != self._ai_generation:
             return
         if self.is_ai_match_paused or self.game_over:
             return
+        # Ép chặn đúng ô nếu đối thủ đang có nước thắng ngay
+        r, c = self._force_urgent_ai_square(r, c, ai_side)
         if not (0 <= r < self.board_size and 0 <= c < self.board_size):
             print(f"[AI INVALID] tọa độ ngoài bàn: r={r}, c={c}, size={self.board_size}")
             self._handle_ai_error("ai_err")
@@ -5376,8 +5728,8 @@ class XOUltraAI:
 
     def limit_name_length(self, *args):
         current_name = self.player_name_var.get()
-        if len(current_name) > 16:
-            self.player_name_var.set(current_name[:16])
+        if len(current_name) > 13:
+            self.player_name_var.set(current_name[:13])
 
     def on_close(self, event=None):
         self.stop_thinking_animation(); self.save_settings()

@@ -84,8 +84,8 @@
       "online_opp_ready": "Đối thủ đã sẵn sàng ván mới!",
       "online_disconnected": "Mất kết nối máy chủ",
       "online_turn": "Lượt của {}",
-      "online_you_win": "BẠN ({}) THẮNG!",
-      "online_opp_win": "ĐỐI THỦ ({}) THẮNG!",
+      "online_you_win": "{} ({}) THẮNG!",
+      "online_opp_win": "{} ({}) THẮNG!",
       "online_opp_left": "Đối thủ đã thoát.",
       "default_opp": "Đối thủ",
       "symbol_label": "Phe:",
@@ -125,7 +125,7 @@
       "Ultra AI": "Ultra-AI",
       "turn_ai": "Lượt của {}",
       "network_error": "Lỗi mạng: {}",
-      "app_title": "XOUltra-AI (Bản Online)",
+      "app_title": "XOUltra-AI",
       "online_invalid_request": "Yêu cầu không hợp lệ",
       "online_room_full": "Phòng đã đầy",
       "chat_empty": "Hãy trò chuyện cùng đối thủ ở đây",
@@ -145,7 +145,14 @@
       "resign_offer_status": "{0} muốn cầu hòa — CHẤP NHẬN hoặc TỪ CHỐI (15s)",
       "resign_expired_msg": "Yêu cầu cầu hòa đã hết hạn (15s). Tiếp tục ván đấu!",
       "resign_limit_msg": "Đã dùng hết 2 lần cầu hòa trong ván này.",
-      "block_rule_warn_mac": "Trên macOS chưa hỗ trợ luật Chặn 2 đầu cho AI. AI vẫn suy nghĩ theo luật Tiêu chuẩn. Muốn AI chơi đúng luật này hãy dùng bản Windows, hoặc chơi 2 Người / Online để có trải nghiệm tốt nhất!"
+      "block_rule_warn_mac": "Trên macOS chưa hỗ trợ luật Chặn 2 đầu cho AI. AI vẫn suy nghĩ theo luật Tiêu chuẩn. Muốn AI chơi đúng luật này hãy dùng bản Windows, hoặc chơi 2 Người / Online để có trải nghiệm tốt nhất!",
+      "surrender_btn": "ĐẦU HÀNG",
+      "surrender_confirm_btn": "Có",
+      "surrender_confirm_msg": "Bạn có thực sự muốn đầu hàng không? ({})",
+      "draw_agreed_msg": "HÒA CỜ! Hai bên đã đồng ý cầu hòa.",
+      "online_named_win": "{} ({}) THẮNG!",
+      "online_surrender_win": "{} đã đầu hàng. {} ({}) thắng!",
+      "online_timeout_win": "HẾT GIỜ! {} ({}) thắng!"
     },
     "EN": {
       "mode": "Mode:",
@@ -217,8 +224,8 @@
       "online_opp_ready": "Opponent is ready for rematch!",
       "online_disconnected": "Disconnected from server",
       "online_turn": "{}'s turn",
-      "online_you_win": "YOU ({}) WIN!",
-      "online_opp_win": "OPPONENT ({}) WINS!",
+      "online_you_win": "{} ({}) WINS!",
+      "online_opp_win": "{} ({}) WINS!",
       "online_opp_left": "Opponent left.",
       "default_opp": "Opponent",
       "symbol_label": "Side:",
@@ -258,7 +265,7 @@
       "Ultra AI": "Ultra-AI",
       "turn_ai": "{}'s turn",
       "network_error": "Network error: {}",
-      "app_title": "XOUltra-AI (Online)",
+      "app_title": "XOUltra-AI",
       "online_invalid_request": "Invalid request",
       "online_room_full": "Room is full",
       "chat_empty": "Chat with your opponent here",
@@ -278,7 +285,14 @@
       "resign_offer_status": "{0} wants a draw — ACCEPT or REJECT (15s)",
       "resign_expired_msg": "Draw offer expired (15s). Continue playing!",
       "resign_limit_msg": "You have used both draw offers this game.",
-      "block_rule_warn_mac": "macOS does not support the Block-both-ends rule for AI. AI still thinks by Standard rules. For correct AI under this rule, use the Windows build, or play 2 Players / Online for the best experience!"
+      "block_rule_warn_mac": "macOS does not support the Block-both-ends rule for AI. AI still thinks by Standard rules. For correct AI under this rule, use the Windows build, or play 2 Players / Online for the best experience!",
+      "surrender_btn": "RESIGN",
+      "surrender_confirm_btn": "Yes",
+      "surrender_confirm_msg": "Do you really want to resign? ({})",
+      "draw_agreed_msg": "DRAW! Both players agreed to a draw.",
+      "online_named_win": "{} ({}) WINS!",
+      "online_surrender_win": "{} resigned. {} ({}) wins!",
+      "online_timeout_win": "TIME OUT! {} ({}) wins!"
     }
   }
 }
