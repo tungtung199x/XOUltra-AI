@@ -24,7 +24,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller customtkinter pillow websocket-client
+        pip install "pyinstaller>=6.3,<7" "customtkinter>=5.2,<6" "pillow>=10,<12" "websocket-client>=1.6,<2"
 
     # networks/ bắt buộc cho engine luật Chặn 2 đầu trên Windows
     - name: Verify required files (Windows)
@@ -95,7 +95,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller customtkinter pillow websocket-client
+        pip install "pyinstaller>=6.3,<7" "customtkinter>=5.2,<6" "pillow>=10,<12" "websocket-client>=1.6,<2"
 
     - name: Make engine executable
       run: chmod +x pbrain-rapfi-mac
